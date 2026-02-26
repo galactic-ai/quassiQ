@@ -1,34 +1,31 @@
 import sys
-#=================change============================
 sys.path.append('/Users/iemotoyuni/Desktop/SpenderQ/SpenderQ_Clone/SpenderQ/src')
-
 from spenderq.spenderq import SpenderQ
 spender = SpenderQ("qso.dr1.hiz")
+
+import numpy as np
 from spenderq import desi_qso
 import torch
-import numpy as np
 import pandas as pd
 from astropy.io import fits
 from desispec.io import read_spectra
 from desispec.io.fibermap import read_fibermap
 from astropy.table import Table, vstack
 import matplotlib.pyplot as plt
+
 import glob
 import os
-import re
-import shutil
-
 
 desiQSO = desi_qso.DESI()
-#=================change============================
 coadd_dir = "/Users/iemotoyuni/Desktop/SpenderQ/quassiQ/spender_qso/coadd"
-qsos = Table.read('/Users/iemotoyuni/Desktop/SpenderQ/catalog/CLQ_candidates.csv')
-
-# Collect coadd FITS from both top-level and per-target subdirectories
 coadd_files = sorted(glob.glob(os.path.join(coadd_dir, "*", "coadd-*.fits")))
 len(coadd_files)
+qsos = Table.read('/Users/iemotoyuni/Desktop/SpenderQ/catalog/CLQ_candidates.csv')
 
-# Find newly generated coadd files
+# ========= Function for renormalization =============================
+
+import re
+
 def parse_tileid_lastnight(path):
     name = os.path.basename(path)
     m = re.match(r"coadd-\d+-(\d+)-(\d+)-\d+\.fits$", name)
@@ -46,7 +43,8 @@ for p in coadd_files:
 tile_table = Table(rows=rows, names=("path", "tileid", "lastnight"))
 tile_table.pprint_all()
 
-# ========= Function for renormalization =============================
+# store per-target spectra and reconstructions
+recon_store = {}
 
 def prepare_spectra(coadd_path, qsos):
     """Prepare a single-coadd QSO spectrum file (B/R/Z) into SpenderQ inputs."""
@@ -345,8 +343,10 @@ for coadd_path in coadd_files:
     plt.close()
     #plt.show()
 
-    #===RUN SpenderQ on the normalized spectrum ===
-    for coadd_path in coadd_files:
+#===RUN SpenderQ on the normalized spectrum ===
+    # Process the already-prepared spectra for the current coadd_path
+
+for coadd_path in coadd_files:
     print(f"\nProcessing: {coadd_path}")
     spec, w, z, target_id_t, norm, zerr = prepare_spectra(coadd_path, qsos)
     if len(spec) == 0:
@@ -357,10 +357,12 @@ for coadd_path in coadd_files:
 
     for i in range(len(target_id_t)):
         spec_i = spec[i:i+1]
+        w_i = w[i:i+1]
         z_i = z[i:i+1]
 
         try:
-            s, recon = spender.eval(spec_i, w, z_i)
+            s, recon = spender.eval(spec_i, w_i, z_i)
+        
         except IndexError as e:
             print(f"IndexError in Lyα absorption for index {i}: {e}")
             print("Falling back to encode/decode without Lyα masking...")
@@ -375,28 +377,21 @@ for coadd_path in coadd_files:
 
         print(f"[{i}] Latent shape: {s.shape}, recon shape: {recon.shape}")
 
-        # Plot normalized vs reconstruction (rest-frame)
+        # Plot normalized vs reconstruction (rest-frame) and store for combined plotting
         wave_recon = spender.wave_recon()
         z0 = float(z_i[0].cpu().numpy())
         wave_rest = (desiQSO._wave_obs / (1.0 + z0)).cpu().numpy()
 
-        plt.figure(figsize=(12, 4))
-        plt.plot(wave_rest, spec_i[0].cpu().numpy(), color="tab:blue", lw=0.8, label="Normalized")
-        plt.plot(wave_recon, recon[0], color="tab:red", lw=0.8, label="SpenderQ recon")
-        plt.title(f"SpenderQ — TARGETID {int(target_id_t[i])} (z={z0:.4f})")
-        plt.xlabel("Rest Wavelength (Å)")
-        plt.ylabel("Flux")
-        plt.grid(alpha=0.3)
-        plt.legend()
+        # save arrays into recon_store per TARGETID, include redshift and observation date
         tid = int(target_id_t[i])
-        target_dir = os.path.join(coadd_dir, str(tid))
-        recon_dir = os.path.join(target_dir, "recon")
-        os.makedirs(recon_dir, exist_ok=True)
-        out_fname = f"{coadd_tag}_TARGETID_{tid}_recon.png"
-        out_path = os.path.join(recon_dir, out_fname)
-        plt.savefig(out_path, dpi=150, bbox_inches="tight")
-        plt.show()
-        plt.close()
+        # compute observation date (lastnight) from coadd filename
+        tileid, lastnight = parse_tileid_lastnight(coadd_path)
+        recon_store.setdefault(tid, {"specs": [], "recons": []})
+        recon_store[tid]["specs"].append((wave_rest, spec_i[0].cpu().numpy(), z0, lastnight))
+        recon_store[tid]["recons"].append((wave_recon, recon[0], z0, lastnight))
+
+        # store only; individual saving will be done after collecting all spectra
+        # (this allows consistent y-limits across all plots for the same TARGETID)
 
 #====read latent space====
 latent_list = []
@@ -435,6 +430,7 @@ for coadd_path in coadd_files:
 # Stack all latent vectors
 if latent_list:
     latent = np.array(latent_list)  # shape (n_samples, latent_dim)
+    target_ids_array = np.array(target_id_list)
     print(f"Collected {latent.shape[0]} latent vectors of size {latent.shape[1]}")
 else:
     print("No latent vectors collected — check your data!")
@@ -493,6 +489,140 @@ if len(summary_rows) > 0:
     summary_csv = os.path.join(out_dir, "latent_variance_by_target.csv")
     df_summary.to_csv(summary_csv, index=False)
     print(f"Saved {summary_csv} ({len(df_summary)} rows)")
+
+
+# ==== create per-target plots (per-spectrum PNGs) ====
+from itertools import zip_longest
+
+for tid, data in recon_store.items():
+    specs = data.get("specs", [])
+    recons = data.get("recons", [])
+    if len(specs) == 0 and len(recons) == 0:
+        continue
+
+    # choose the spectrum+recon pair with the largest dynamic range
+    # and use its min/max as the shared y-limits for all individual plots
+    n_pairs = max(len(specs), len(recons))
+    best_min = None
+    best_max = None
+    best_range = -1.0
+    for idx in range(n_pairs):
+        vals = []
+        if idx < len(specs):
+            _, sp, _, _ = specs[idx]
+            if getattr(sp, "size", 0):
+                vals.append(np.asarray(sp).ravel())
+        if idx < len(recons):
+            _, rc, _, _ = recons[idx]
+            if getattr(rc, "size", 0):
+                vals.append(np.asarray(rc).ravel())
+        if len(vals) == 0:
+            continue
+        arr = np.concatenate([v for v in vals if v.size > 0])
+        lo = float(np.nanmin(arr))
+        hi = float(np.nanmax(arr))
+        rng = hi - lo
+        if rng > best_range:
+            best_range = rng
+            best_min = lo
+            best_max = hi
+
+    # fallback to overall range if nothing found
+    if best_min is None:
+        all_vals = []
+        for wv, sp, z_s, obs in specs:
+            if getattr(sp, "size", 0):
+                all_vals.append(sp.ravel())
+        for wv, rc, z_r, obs_r in recons:
+            if getattr(rc, "size", 0):
+                all_vals.append(rc.ravel())
+        if len(all_vals) == 0:
+            continue
+        arr = np.concatenate(all_vals)
+        best_min = float(np.nanmin(arr))
+        best_max = float(np.nanmax(arr))
+
+    ymin = best_min
+    ymax = best_max
+    if ymax <= ymin:
+        ymax = ymin + 1.0
+
+    # prepare recon directory and clear previous files
+    target_dir = os.path.join(coadd_dir, str(tid))
+    recon_dir = os.path.join(target_dir, "recon")
+    os.makedirs(recon_dir, exist_ok=True)
+    if os.path.isdir(recon_dir):
+        for _f in os.listdir(recon_dir):
+            _p = os.path.join(recon_dir, _f)
+            try:
+                if os.path.isfile(_p) or os.path.islink(_p):
+                    os.remove(_p)
+                elif os.path.isdir(_p):
+                    shutil.rmtree(_p)
+            except Exception:
+                pass
+
+    # iterate over pairs of (spec, recon) and save simple per-spectrum plots
+    for idx in range(max(len(specs), len(recons))):
+        spec_tuple = specs[idx] if idx < len(specs) else None
+        recon_tuple = recons[idx] if idx < len(recons) else None
+        if spec_tuple is None:
+            continue
+        wv_s, sp, z_s, obs = spec_tuple
+        wv_r, rc, z_r, obs_r = recon_tuple if recon_tuple is not None else (None, None, None, None)
+
+        plt.figure(figsize=(12, 4))
+        plt.plot(wv_s, sp, color="tab:blue", lw=0.8, label="Normalized")
+        if rc is not None:
+            plt.plot(wv_r, rc, color="tab:red", lw=0.8, label="SpenderQ recon")
+        plt.title(f"SpenderQ — TARGETID {tid} (obs {obs}, z={z_s:.4f})")
+        plt.xlabel("Rest Wavelength (Å)")
+        plt.ylabel("Flux")
+        # use the shared y-limits (from the widest pair)
+        plt.ylim(ymin, ymax)
+        plt.grid(alpha=0.25)
+        plt.legend()
+        out_fname = f"{tid}_obs{obs}_z{z_s:.4f}_idx{idx}.png"
+        out_path = os.path.join(recon_dir, out_fname)
+        # remove existing file if present (clear before save)
+        try:
+            if os.path.exists(out_path):
+                os.remove(out_path)
+        except Exception:
+            pass
+        plt.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close()
+
+    # overlay all reconstructed spectra (one plot per TARGETID)
+    if len(recons) > 0:
+        # compute tight y-limits for overlay from reconstructed spectra only
+        rec_vals = [np.asarray(rc).ravel() for (_, rc, _, _) in recons if getattr(rc, "size", 0)]
+        if len(rec_vals) > 0:
+            rec_arr = np.concatenate(rec_vals)
+            o_min = float(np.nanmin(rec_arr))
+            o_max = float(np.nanmax(rec_arr))
+            if o_max <= o_min:
+                o_max = o_min + 1.0
+        else:
+            o_min, o_max = ymin, ymax
+
+        plt.figure(figsize=(14, 6))
+        N = len(recons)
+        cmap = plt.get_cmap("viridis") if N > 10 else plt.get_cmap("tab10")
+        colors = [cmap(i / max(1, N - 1)) for i in range(N)]
+        for j, (wv, rc, z_r, obs_r) in enumerate(recons):
+            lbl = f"obs {obs_r} (z={z_r:.4f})"
+            plt.plot(wv, rc, color=colors[j % len(colors)], lw=1.0, label=lbl, alpha=0.4)
+
+        plt.title(f"All Reconstructed Spectra — TARGETID {tid}")
+        plt.xlabel("Rest Wavelength (Å)")
+        plt.ylabel("Flux")
+        plt.ylim(o_min, o_max)
+        plt.grid(alpha=0.25)
+        plt.legend(loc="best", fontsize="small")
+        overlay_path = os.path.join(recon_dir, f"TARGETID_{tid}_all_recons_overlay.png")
+        plt.savefig(overlay_path, dpi=150, bbox_inches="tight")
+        plt.close()
 
 
 
