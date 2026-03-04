@@ -608,28 +608,19 @@ for tid, data in recon_store.items():
                 hi = lo + 1.0
             return lo, hi
 
-        def _distinct_colors(n):
+        def _overlay_colors(n):
             if n <= 0:
                 return []
-            cmap_local = plt.get_cmap("viridis")
-            if n == 1:
-                positions = [0.55]
-            elif n == 2:
-                positions = [0.15, 0.85]
-            elif n == 3:
-                positions = [0.10, 0.50, 0.90]
-            elif n == 4:
-                positions = [0.05, 0.35, 0.65, 0.95]
-            elif n == 5:
-                positions = [0.05, 0.275, 0.50, 0.725, 0.95]
-            else:
-                positions = np.linspace(0.05, 0.95, n)
-            return [cmap_local(float(p)) for p in positions]
+            priority_colors = ["indianred", "steelblue", "seagreen"]
+            if n <= 3:
+                return priority_colors[:n]
+            cmap = plt.get_cmap("viridis") if n > 10 else plt.get_cmap("tab10")
+            return [cmap(i / max(1, n - 1)) for i in range(n)]
 
         n_obs_colors = max(1, len(specs))
         n_rec_colors = max(1, len(recons))
-        obs_colors = _distinct_colors(n_obs_colors)
-        rec_colors = _distinct_colors(n_rec_colors)
+        obs_colors = _overlay_colors(n_obs_colors)
+        rec_colors = _overlay_colors(n_rec_colors)
 
         # 1) reconstruction overlay
         if len(recons) > 0:
@@ -663,7 +654,7 @@ for tid, data in recon_store.items():
             s_min, s_max = _compute_ylim([sp for (_, sp, _, _) in specs], ymin, ymax)
             plt.figure(figsize=(14, 6))
             for j, (wv_s, sp, z_s, obs_s) in enumerate(specs):
-                plt.plot(wv_s, sp, color=obs_colors[j % len(obs_colors)], lw=0.7, alpha=0.35, linestyle="-", label=f"obs {obs_s} observed")
+                plt.plot(wv_s, sp, color=obs_colors[j % len(obs_colors)], lw=0.7, alpha=0.30, linestyle="-", label=f"obs {obs_s} observed")
             plt.title(f"Observed Spectra Overlay — TARGETID {tid}")
             plt.xlabel("Rest Wavelength (Å)")
             plt.ylabel("Flux")
