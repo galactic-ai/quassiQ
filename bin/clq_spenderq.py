@@ -8,8 +8,8 @@ from spenderq import desi_qso
 import torch
 import pandas as pd
 from astropy.io import fits
-from desispec.io import read_spectra
-from desispec.io.fibermap import read_fibermap
+# from desispec.io import read_spectra
+# from desispec.io.fibermap import read_fibermap
 from astropy.table import Table, vstack
 import matplotlib.pyplot as plt
 
@@ -401,15 +401,17 @@ for coadd_path in coadd_files:
     spec, w, z, target_id_t, norm, zerr = prepare_spectra(coadd_path, qsos)
     if len(spec) == 0:
         continue
+    _, obs_night = parse_tileid_lastnight(coadd_path)
 
     for i in range(len(spec)):
         spec_i = spec[i:i+1]
         w_i    = w[i:i+1]
         z_i    = z[i:i+1]
+        target_id_val = int(target_id_t[i])
 
         # Skip NaNs early
         if np.isnan(spec_i).any() or np.isnan(w_i).any() or np.isnan(z_i).any():
-            print(f"Skipping spectrum {i} due to NaNs")
+            print(f"Skipping TARGETID {target_id_val} (obs {obs_night}) due to NaNs")
             continue
 
         # Convert to torch tensors
@@ -420,11 +422,11 @@ for coadd_path in coadd_files:
         # Safely run SpenderQ
         try:
             s, recon = spender.eval(spec_i_tensor, w_i_tensor, z_i_tensor)
-            print(f"Successfully ran SpenderQ on index {i}")
+            print(f"Successfully ran SpenderQ on TARGETID {target_id_val} (obs {obs_night})")
             latent_list.append(s.cpu().numpy().flatten())  # save latent vector
-            target_id_list.append(int(target_id_t[i]))
+            target_id_list.append(target_id_val)
         except Exception as e:
-            print(f"I couldn't run SpenderQ on index {i}: {e}")
+            print(f"I couldn't run SpenderQ on TARGETID {target_id_val} (obs {obs_night}): {e}")
             continue
 
 # Stack all latent vectors
@@ -572,9 +574,9 @@ for tid, data in recon_store.items():
         wv_r, rc, z_r, obs_r = recon_tuple if recon_tuple is not None else (None, None, None, None)
 
         plt.figure(figsize=(12, 4))
-        plt.plot(wv_s, sp, color="tab:blue", lw=0.8, label="Normalized")
+        plt.plot(wv_s, sp, color="tab:blue", lw=0.7, alpha=0.9, label="Observed")
         if rc is not None:
-            plt.plot(wv_r, rc, color="tab:red", lw=0.8, label="SpenderQ recon")
+            plt.plot(wv_r, rc, color="tab:red", lw=0.7, alpha=0.95, label="SpenderQ recon")
         plt.title(f"SpenderQ — TARGETID {tid} (obs {obs}, z={z_s:.4f})")
         plt.xlabel("Rest Wavelength (Å)")
         plt.ylabel("Flux")
@@ -593,39 +595,83 @@ for tid, data in recon_store.items():
         plt.savefig(out_path, dpi=150, bbox_inches="tight")
         plt.close()
 
-    # overlay all reconstructed spectra (one plot per TARGETID)
-    if len(recons) > 0:
-        # compute tight y-limits for overlay from reconstructed spectra only
-        rec_vals = [np.asarray(rc).ravel() for (_, rc, _, _) in recons if getattr(rc, "size", 0)]
-        if len(rec_vals) > 0:
-            rec_arr = np.concatenate(rec_vals)
-            o_min = float(np.nanmin(rec_arr))
-            o_max = float(np.nanmax(rec_arr))
-            if o_max <= o_min:
-                o_max = o_min + 1.0
-        else:
-            o_min, o_max = ymin, ymax
+    # save three overlays per target: recon only, observation only, and both
+    if len(specs) > 0 or len(recons) > 0:
+        def _compute_ylim(arrays, fallback_min, fallback_max):
+            valid = [np.asarray(a).ravel() for a in arrays if getattr(a, "size", 0)]
+            if len(valid) == 0:
+                return fallback_min, fallback_max
+            vals = np.concatenate(valid)
+            lo = float(np.nanmin(vals))
+            hi = float(np.nanmax(vals))
+            if hi <= lo:
+                hi = lo + 1.0
+            return lo, hi
 
-        plt.figure(figsize=(14, 6))
-        N = len(recons)
-        cmap = plt.get_cmap("viridis") if N > 10 else plt.get_cmap("tab10")
-        colors = [cmap(i / max(1, N - 1)) for i in range(N)]
-        for j, (wv, rc, z_r, obs_r) in enumerate(recons):
-            lbl = f"obs {obs_r} (z={z_r:.4f})"
-            plt.plot(wv, rc, color=colors[j % len(colors)], lw=1.0, label=lbl, alpha=0.4)
+        def _distinct_colors(n):
+            if n <= 0:
+                return []
+            cmap_local = plt.get_cmap("viridis")
+            if n == 1:
+                positions = [0.55]
+            elif n == 2:
+                positions = [0.15, 0.85]
+            elif n == 3:
+                positions = [0.10, 0.50, 0.90]
+            elif n == 4:
+                positions = [0.05, 0.35, 0.65, 0.95]
+            elif n == 5:
+                positions = [0.05, 0.275, 0.50, 0.725, 0.95]
+            else:
+                positions = np.linspace(0.05, 0.95, n)
+            return [cmap_local(float(p)) for p in positions]
 
-        plt.title(f"All Reconstructed Spectra — TARGETID {tid}")
-        plt.xlabel("Rest Wavelength (Å)")
-        plt.ylabel("Flux")
-        plt.ylim(o_min, o_max)
-        plt.grid(alpha=0.25)
-        plt.legend(loc="best", fontsize="small")
-        overlay_path = os.path.join(recon_dir, f"TARGETID_{tid}_all_recons_overlay.png")
-        plt.savefig(overlay_path, dpi=150, bbox_inches="tight")
-        plt.close()
+        n_obs_colors = max(1, len(specs))
+        n_rec_colors = max(1, len(recons))
+        obs_colors = _distinct_colors(n_obs_colors)
+        rec_colors = _distinct_colors(n_rec_colors)
 
+        # 1) reconstruction overlay
+        if len(recons) > 0:
+            rec_vals = [np.asarray(rc).ravel() for (_, rc, _, _) in recons if getattr(rc, "size", 0)]
+            if len(rec_vals) > 0:
+                rec_arr = np.concatenate(rec_vals)
+                o_min = float(np.nanmin(rec_arr))
+                o_max = float(np.nanmax(rec_arr))
+                if o_max <= o_min:
+                    o_max = o_min + 1.0
+            else:
+                o_min, o_max = ymin, ymax
 
+            plt.figure(figsize=(14, 6))
+            for j, (wv_r, rc, z_r, obs_r) in enumerate(recons):
+                lbl = f"obs {obs_r} (z={z_r:.4f})"
+                plt.plot(wv_r, rc, color=rec_colors[j % len(rec_colors)], lw=0.7, label=lbl, alpha=0.3)
 
+            plt.title(f"All Reconstructed Spectra — TARGETID {tid}")
+            plt.xlabel("Rest Wavelength (Å)")
+            plt.ylabel("Flux")
+            plt.ylim(o_min, o_max)
+            plt.grid(alpha=0.25)
+            plt.legend(loc="best", fontsize="small")
+            overlay_path = os.path.join(recon_dir, f"TARGETID_{tid}_all_recons_overlay.png")
+            plt.savefig(overlay_path, dpi=150, bbox_inches="tight")
+            plt.close()
 
-    
+        # 2) observation overlay (pre-SpenderQ normalized input spectra)
+        if len(specs) > 0:
+            s_min, s_max = _compute_ylim([sp for (_, sp, _, _) in specs], ymin, ymax)
+            plt.figure(figsize=(14, 6))
+            for j, (wv_s, sp, z_s, obs_s) in enumerate(specs):
+                plt.plot(wv_s, sp, color=obs_colors[j % len(obs_colors)], lw=0.7, alpha=0.35, linestyle="-", label=f"obs {obs_s} observed")
+            plt.title(f"Observed Spectra Overlay — TARGETID {tid}")
+            plt.xlabel("Rest Wavelength (Å)")
+            plt.ylabel("Flux")
+            plt.ylim(s_min, s_max)
+            plt.grid(alpha=0.25)
+            plt.legend(loc="best", fontsize="small")
+            obs_overlay_path = os.path.join(recon_dir, f"TARGETID_{tid}_obs_overlay.png")
+            plt.savefig(obs_overlay_path, dpi=150, bbox_inches="tight")
+            plt.close()
+
 
