@@ -19,7 +19,7 @@ import os
 desiQSO = desi_qso.DESI()
 coadd_dir = "/Users/iemotoyuni/Desktop/SpenderQ/quassiQ/spender_qso/coadd"
 coadd_files = sorted(glob.glob(os.path.join(coadd_dir, "*", "coadd-*.fits")))
-len(coadd_files)
+print(f"Found {len(coadd_files)} coadd files in {coadd_dir}")
 qsos = Table.read('/Users/iemotoyuni/Desktop/SpenderQ/catalog/CLQ_candidates.csv')
 
 # ========= Function for renormalization =============================
