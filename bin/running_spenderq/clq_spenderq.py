@@ -1,4 +1,9 @@
 import sys
+import csv
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
 sys.path.append('/Users/iemotoyuni/Desktop/SpenderQ/SpenderQ_Clone/SpenderQ/src')
 from spenderq.spenderq import SpenderQ
 spender = SpenderQ("qso.dr1.hiz")
@@ -19,7 +24,7 @@ import os
 desiQSO = desi_qso.DESI()
 coadd_dir = "/Users/iemotoyuni/Desktop/SpenderQ/quassiQ/spender_qso/coadd"
 coadd_files = sorted(glob.glob(os.path.join(coadd_dir, "*", "coadd-*.fits")))
-print(f"Found {len(coadd_files)} coadd files in {coadd_dir}")
+len(coadd_files)
 qsos = Table.read('/Users/iemotoyuni/Desktop/SpenderQ/catalog/CLQ_candidates.csv')
 
 # ========= Function for renormalization =============================
@@ -45,6 +50,7 @@ tile_table.pprint_all()
 
 # store per-target spectra and reconstructions
 recon_store = {}
+skipped_files = []
 
 def prepare_spectra(coadd_path, qsos):
     """Prepare a single-coadd QSO spectrum file (B/R/Z) into SpenderQ inputs."""
@@ -121,9 +127,20 @@ def prepare_spectra(coadd_path, qsos):
                 band = ext.split("_")[0].lower()
                 _res[band] = hdul[h].data
 
-    required = {"b", "r", "z"}
-    if not required.issubset(_wave.keys()):
-        raise KeyError(f"Missing band(s): {sorted(required - set(_wave.keys()))}")
+    missing = []
+    for b in ["b", "r", "z"]:
+        if b not in _wave:
+            missing.append(f"{b}:WAVELENGTH")
+        if b not in _flux:
+            missing.append(f"{b}:FLUX")
+        if b not in _ivar:
+            missing.append(f"{b}:IVAR")
+        if b not in _mask:
+            missing.append(f"{b}:MASK")
+        if b not in _res:
+            missing.append(f"{b}:RESOLUTION")
+    if missing:
+        raise ValueError(f"Missing spectral components in {os.path.basename(coadd_path)}: {', '.join(missing)}")
 
 
     # coadd to common grid (same logic)
@@ -266,9 +283,22 @@ def _load_raw_single_coadd(coadd_path):
                     _ivar[b] = hdul[ikey].data[0].astype(np.float32)
                     _mask[b] = hdul[mkey].data[0].astype(np.int16)
 
-    required = {"b", "r", "z"}
-    if not required.issubset(_wave.keys()):
-        raise KeyError(f"Missing band(s): {sorted(required - set(_wave.keys()))}")
+    missing = []
+    for b in ["b", "r", "z"]:
+        if b not in _wave:
+            missing.append(f"{b}:WAVELENGTH")
+        if b not in _flux:
+            missing.append(f"{b}:FLUX")
+        if b not in _ivar:
+            missing.append(f"{b}:IVAR")
+        if b not in _mask:
+            missing.append(f"{b}:MASK")
+    if missing:
+        reason = f"Missing spectral components in {os.path.basename(coadd_path)}: {', '.join(missing)}"
+        print(f"Skipping file due to missing/invalid spectral data: {coadd_path}")
+        print(f"  problem: {reason}")
+        skipped_files.append((coadd_path, reason))
+        return None, None, None, None
 
     # coadd to common grid
     tolerance = 1e-4
@@ -303,11 +333,20 @@ import shutil
 for coadd_path in coadd_files:
     print(f"\nProcessing: {coadd_path}")
 
-    # Raw
-    target_id, wave, flux, ivar = _load_raw_single_coadd(coadd_path)
+    try:
+        # Raw
+        target_id, wave, flux, ivar = _load_raw_single_coadd(coadd_path)
+        if wave is None:
+            continue
 
-    # Normalized
-    spec, w, z, target_id_t, norm, zerr = prepare_spectra(coadd_path, qsos)
+        # Normalized
+        spec, w, z, target_id_t, norm, zerr = prepare_spectra(coadd_path, qsos)
+    except Exception as e:
+        print(f"Skipping file due to missing/invalid spectral data: {coadd_path}")
+        print(f"  problem: {e}")
+        skipped_files.append((coadd_path, str(e)))
+        continue
+
     if len(spec) == 0:
         print("No valid spectra after filtering. Skipping.")
         continue
@@ -348,7 +387,14 @@ for coadd_path in coadd_files:
 
 for coadd_path in coadd_files:
     print(f"\nProcessing: {coadd_path}")
-    spec, w, z, target_id_t, norm, zerr = prepare_spectra(coadd_path, qsos)
+    try:
+        spec, w, z, target_id_t, norm, zerr = prepare_spectra(coadd_path, qsos)
+    except Exception as e:
+        print(f"Skipping file due to missing/invalid spectral data: {coadd_path}")
+        print(f"  problem: {e}")
+        skipped_files.append((coadd_path, str(e)))
+        continue
+
     if len(spec) == 0:
         print("No valid spectra after filtering. Skipping.")
         continue
@@ -398,7 +444,14 @@ latent_list = []
 target_id_list = []
 
 for coadd_path in coadd_files:
-    spec, w, z, target_id_t, norm, zerr = prepare_spectra(coadd_path, qsos)
+    try:
+        spec, w, z, target_id_t, norm, zerr = prepare_spectra(coadd_path, qsos)
+    except Exception as e:
+        print(f"Skipping file due to missing/invalid spectral data: {coadd_path}")
+        print(f"  problem: {e}")
+        skipped_files.append((coadd_path, str(e)))
+        continue
+
     if len(spec) == 0:
         continue
     _, obs_night = parse_tileid_lastnight(coadd_path)
@@ -435,9 +488,22 @@ if latent_list:
     target_ids_array = np.array(target_id_list)
     print(f"Collected {latent.shape[0]} latent vectors of size {latent.shape[1]}")
 else:
+    latent = np.empty((0, 0), dtype=np.float32)
+    target_ids_array = np.array([], dtype=np.int64)
     print("No latent vectors collected — check your data!")
 
 print(target_id_list)
+
+if skipped_files:
+    print("\n=== Skipped files summary ===")
+    seen = set()
+    for path, reason in skipped_files:
+        key = (path, reason)
+        if key in seen:
+            continue
+        seen.add(key)
+        print(f"- {path}")
+        print(f"  problem: {reason}")
 
 # ==== download the latent space and target IDs in CSV ====
         
@@ -446,7 +512,7 @@ os.makedirs(out_dir, exist_ok=True)
 
 rows = []
 summary_rows = []
-for targetid in np.unique(target_ids_array):
+for targetid in np.unique(target_ids_array) if target_ids_array.size > 0 else []:
     mask = target_ids_array == targetid
     latent_for_target = latent[mask]
     if latent_for_target.size == 0:
@@ -664,5 +730,253 @@ for tid, data in recon_store.items():
             obs_overlay_path = os.path.join(recon_dir, f"TARGETID_{tid}_obs_overlay.png")
             plt.savefig(obs_overlay_path, dpi=150, bbox_inches="tight")
             plt.close()
+
+
+def compute_target_latent_means(input_csv: Path, output_csv: Path) -> None:
+    with input_csv.open("r", newline="") as source:
+        reader = csv.DictReader(source)
+        if not reader.fieldnames:
+            raise ValueError("Input CSV is missing a header.")
+        if "TARGETID" not in reader.fieldnames:
+            raise ValueError("Input CSV must contain a TARGETID column.")
+
+        latent_columns = [
+            column for column in reader.fieldnames if column.startswith("Latent")
+        ]
+        if not latent_columns:
+            raise ValueError("No latent columns found. Expected columns like Latent1, Latent2, ...")
+
+        sums_by_target: dict[str, dict[str, float]] = {}
+        counts_by_target: dict[str, dict[str, int]] = {}
+        obs_counts: dict[str, int] = {}
+
+        for row in reader:
+            target_id = row.get("TARGETID", "")
+            if target_id == "":
+                continue
+
+            if target_id not in sums_by_target:
+                sums_by_target[target_id] = {column: 0.0 for column in latent_columns}
+                counts_by_target[target_id] = {column: 0 for column in latent_columns}
+                obs_counts[target_id] = 0
+
+            obs_counts[target_id] += 1
+
+            for column in latent_columns:
+                value = row.get(column, "")
+                if value in (None, ""):
+                    continue
+                try:
+                    numeric_value = float(value)
+                except ValueError:
+                    continue
+
+                sums_by_target[target_id][column] += numeric_value
+                counts_by_target[target_id][column] += 1
+
+        with output_csv.open("w", newline="") as target:
+            writer = csv.writer(target)
+            writer.writerow(["TARGETID", "NumObservations", *latent_columns])
+
+            for target_id in sorted(sums_by_target):
+                row_values: list[str] = [target_id, str(obs_counts[target_id])]
+                for column in latent_columns:
+                    count = counts_by_target[target_id][column]
+                    if count == 0:
+                        row_values.append("")
+                    else:
+                        mean_value = sums_by_target[target_id][column] / count
+                        row_values.append(f"{mean_value:.12f}")
+
+                writer.writerow(row_values)
+
+
+def divide_variance_by_mean(
+    variance_csv: Path,
+    mean_csv: Path,
+    output_csv: Path,
+) -> None:
+    with mean_csv.open("r", newline="") as mean_source:
+        mean_reader = csv.DictReader(mean_source)
+        if not mean_reader.fieldnames:
+            raise ValueError("Mean CSV is missing a header.")
+        if "TARGETID" not in mean_reader.fieldnames:
+            raise ValueError("Mean CSV must contain TARGETID.")
+
+        mean_columns = [
+            column
+            for column in mean_reader.fieldnames
+            if column.startswith("Latent") and column != "NumObservations"
+        ]
+        means_by_target: dict[str, dict[str, float]] = {}
+        for row in mean_reader:
+            target_id = row.get("TARGETID", "")
+            if target_id == "":
+                continue
+            means_by_target[target_id] = {}
+            for column in mean_columns:
+                value = row.get(column, "")
+                if value in (None, ""):
+                    continue
+                means_by_target[target_id][column] = float(value)
+
+    with variance_csv.open("r", newline="") as var_source:
+        var_reader = csv.DictReader(var_source)
+        if not var_reader.fieldnames:
+            raise ValueError("Variance CSV is missing a header.")
+        if "TARGETID" not in var_reader.fieldnames:
+            raise ValueError("Variance CSV must contain TARGETID.")
+
+        variance_columns = [
+            column for column in var_reader.fieldnames if column.startswith("Latent") and column.endswith("_var")
+        ]
+        if not variance_columns:
+            raise ValueError("No variance columns found. Expected columns like Latent1_var.")
+
+        latent_mapping = {column: column.removesuffix("_var") for column in variance_columns}
+        for var_column, mean_column in latent_mapping.items():
+            if mean_column not in mean_columns:
+                raise ValueError(
+                    f"Mismatch: variance column {var_column} has no matching mean column {mean_column}."
+                )
+
+        output_rows: list[list[str]] = []
+        seen_variance_targets: set[str] = set()
+
+        for row in var_reader:
+            target_id = row.get("TARGETID", "")
+            if target_id == "":
+                continue
+            seen_variance_targets.add(target_id)
+
+            if target_id not in means_by_target:
+                raise ValueError(f"Mismatch: TARGETID {target_id} exists in variance file but not in mean file.")
+
+            output_row = [target_id]
+            for var_column in variance_columns:
+                mean_column = latent_mapping[var_column]
+                var_value = row.get(var_column, "")
+                mean_value = means_by_target[target_id].get(mean_column)
+
+                if var_value in (None, "") or mean_value is None or mean_value == 0:
+                    output_row.append("")
+                    continue
+
+                ratio = float(var_value) / mean_value
+                output_row.append(f"{ratio:.12f}")
+
+            output_rows.append(output_row)
+
+    missing_in_variance = set(means_by_target.keys()) - seen_variance_targets
+    if missing_in_variance:
+        missing_sorted = ", ".join(sorted(missing_in_variance))
+        raise ValueError(
+            "Mismatch: these TARGETID values exist in mean file but not in variance file: "
+            f"{missing_sorted}"
+        )
+
+    output_header = ["TARGETID", *[f"{column}_over_mean" for column in variance_columns]]
+    with output_csv.open("w", newline="") as target:
+        writer = csv.writer(target)
+        writer.writerow(output_header)
+        writer.writerows(output_rows)
+
+
+def plot_latents_by_target(input_csv: Path, output_dir: Path) -> list[Path]:
+    with input_csv.open("r", newline="") as source:
+        reader = csv.DictReader(source)
+        if not reader.fieldnames:
+            raise ValueError("Plot input CSV is missing a header.")
+        if "TARGETID" not in reader.fieldnames:
+            raise ValueError("Plot input CSV must contain TARGETID.")
+
+        latent_columns = [
+            column
+            for column in reader.fieldnames
+            if column.startswith("Latent")
+            and not column.endswith("_var")
+            and "_over_mean" not in column
+        ]
+        if not latent_columns:
+            raise ValueError("No latent columns found to plot (expected Latent1 ... Latent10).")
+
+        def latent_sort_key(name: str) -> tuple[int, str]:
+            digits = "".join(char for char in name if char.isdigit())
+            return (int(digits), name) if digits else (9999, name)
+
+        latent_columns = sorted(latent_columns, key=latent_sort_key)
+
+        target_ids: list[str] = []
+        values_by_latent: dict[str, list[float]] = {column: [] for column in latent_columns}
+
+        for row in reader:
+            target_id = row.get("TARGETID", "")
+            if target_id == "":
+                continue
+            target_ids.append(target_id)
+
+            for column in latent_columns:
+                value = row.get(column, "")
+                if value in (None, ""):
+                    values_by_latent[column].append(float("nan"))
+                else:
+                    values_by_latent[column].append(float(value))
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    created_files: list[Path] = []
+    x_positions = list(range(len(target_ids)))
+    highlight_suffixes = ("87", "25", "31", "86")
+    point_colors = [
+        "tab:orange" if any(target_id.endswith(suffix) for suffix in highlight_suffixes) else "tab:blue"
+        for target_id in target_ids
+    ]
+
+    for column in latent_columns:
+        fig, axis = plt.subplots(figsize=(12, 4))
+        y_values = values_by_latent[column]
+        axis.scatter(x_positions, y_values, s=24, c=point_colors)
+        axis.set_title(f"{column} across TARGETIDs")
+        axis.set_xlabel("TARGETID")
+        axis.set_ylabel(column)
+        axis.set_xticks(x_positions)
+        axis.set_xticklabels(target_ids, rotation=90, fontsize=8)
+        axis.grid(axis="x", alpha=0.3)
+
+        for x_value, y_value in zip(x_positions, y_values):
+            if y_value != y_value:
+                continue
+            axis.annotate(
+                f"{y_value:.3f}",
+                (x_value, y_value),
+                textcoords="offset points",
+                xytext=(0, 5),
+                ha="center",
+                fontsize=7,
+            )
+        fig.tight_layout()
+
+        plot_path = output_dir / f"{column}_across_targets.png"
+        fig.savefig(plot_path, dpi=150)
+        print(f"Saved latent plot: {plot_path}")
+        plt.close(fig)
+        created_files.append(plot_path)
+
+    return created_files
+
+
+# ==== create per-target latent means and latent plots ====
+latent_all_csv = Path(os.path.join(out_dir, "latent_all_targets.csv"))
+latent_mean_csv = Path(os.path.join(out_dir, "latent_mean_by_target.csv"))
+latent_plot_dir = Path(os.path.join(out_dir, "plot"))
+
+if latent_all_csv.exists():
+    compute_target_latent_means(latent_all_csv, latent_mean_csv)
+    print(f"Saved {latent_mean_csv}")
+    created_files = plot_latents_by_target(latent_mean_csv, latent_plot_dir)
+    print(f"Generated {len(created_files)} latent plots in {latent_plot_dir}")
+else:
+    print(f"Skipping latent plots: missing {latent_all_csv}")
+
+
 
 
