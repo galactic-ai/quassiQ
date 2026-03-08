@@ -979,7 +979,7 @@ def plot_latents_by_target(input_csv: Path, output_dir: Path) -> list[Path]:
 
         plot_path = output_dir / f"{column}_across_targets.png"
         fig.savefig(plot_path, dpi=150)
-        print(f"Saved latent plot: {plot_path}")
+        print(f"Saved histogram: {plot_path}")
         plt.close(fig)
         created_files.append(plot_path)
 
