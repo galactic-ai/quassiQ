@@ -1,5 +1,6 @@
 import sys
 import csv
+import argparse
 from pathlib import Path
 
 import matplotlib
@@ -19,10 +20,68 @@ import matplotlib.pyplot as plt
 import glob
 import os
 
+
+def _parse_target_ids(values):
+    """Parse TARGETIDs from CLI values supporting comma/space separated inputs."""
+    parsed = []
+    for value in values:
+        for token in str(value).split(","):
+            token = token.strip()
+            if token:
+                parsed.append(token)
+    return sorted(set(parsed))
+
+
+def get_args():
+    parser = argparse.ArgumentParser(
+        description="Run SpenderQ reconstruction with optional TARGETID filtering."
+    )
+    parser.add_argument(
+        "positional_target_ids",
+        nargs="*",
+        help="Optional positional TARGETIDs to process.",
+    )
+    parser.add_argument(
+        "--target-ids",
+        dest="flag_target_ids",
+        nargs="+",
+        default=None,
+        help="Optional TARGETIDs to process (space or comma separated).",
+    )
+    return parser.parse_args()
+
+
+args = get_args()
+
 desiQSO = desi_qso.DESI()
 coadd_dir = "/work/11161/kanyuni/ls6/quassiQ/coadds"
 coadd_files = sorted(glob.glob(os.path.join(coadd_dir, "*", "coadd-*.fits")))
 #coadd_files = sorted(glob.glob(os.path.join(coadd_dir, "39627853670650224", "coadd-*.fits")))
+
+requested_ids_raw = list(args.positional_target_ids or [])
+if args.flag_target_ids:
+    requested_ids_raw.extend(args.flag_target_ids)
+
+if requested_ids_raw:
+    requested_target_ids = _parse_target_ids(requested_ids_raw)
+    requested_target_id_set = set(requested_target_ids)
+    coadd_files = [
+        coadd_path
+        for coadd_path in coadd_files
+        if os.path.basename(os.path.dirname(coadd_path)) in requested_target_id_set
+    ]
+    print(
+        f"Filtering to {len(requested_target_ids)} TARGETIDs: {', '.join(requested_target_ids)}"
+    )
+
+if not coadd_files:
+    print("No matching coadd files found for the requested TARGETIDs.")
+    sys.exit(1)
+
+if requested_ids_raw:
+    print(f"Found {len(coadd_files)} coadd files for requested TARGETIDs")
+else:
+    print(f"Found {len(coadd_files)} coadd files across all TARGETIDs")
 
 len(coadd_files)
 qsos = Table.read('/work/11161/kanyuni/ls6/quassiQ/catalog/CLQ_candidates.csv')
@@ -77,6 +136,8 @@ def prepare_spectra(coadd_path, qsos):
             # tensors
             spec = torch.from_numpy(flux.astype(np.float32))[None, :]
             w = torch.from_numpy(ivar.astype(np.float32))[None, :]
+            if target_id is None:
+                raise ValueError(f"Missing TARGETID in FIBERMAP for {os.path.basename(coadd_path)}")
             target_id = torch.tensor([int(target_id)], dtype=torch.int64)
 
             w[:, desiQSO._skyline_mask] = 0
@@ -212,6 +273,8 @@ def prepare_spectra(coadd_path, qsos):
     # tensors
     spec = torch.from_numpy(flux.astype(np.float32))
     w = torch.from_numpy(ivar.astype(np.float32))
+    if target_id is None:
+        raise ValueError(f"Missing TARGETID in FIBERMAP for {os.path.basename(coadd_path)}")
     target_id = torch.tensor([int(target_id)], dtype=torch.int64)
 
     w[:, desiQSO._skyline_mask] = 0
@@ -327,69 +390,187 @@ def _load_raw_single_coadd(coadd_path):
     return target_id, wave, flux, ivar
 
 
-#====disply the normalized spectra =====
-import shutil
+#==== incrementally process each coadd for restart-safe TACC runs =====
+LATENT_OUT_DIR = Path("/work/11161/kanyuni/ls6/quassiQ/latent")
+LATENT_OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-for coadd_path in coadd_files:
-    print(f"\nProcessing: {coadd_path}")
+LATENT_ALL_CSV = LATENT_OUT_DIR / "latent_all_targets.csv"
+LATENT_VAR_CSV = LATENT_OUT_DIR / "latent_variance_by_target.csv"
+LATENT_VAR_DIV_MEAN_CSV = LATENT_OUT_DIR / "latent_variance_div_mean_by_target.csv"
+LATENT_HIST_DIR = LATENT_OUT_DIR / "plot"
+LATENT_HIST_DIR.mkdir(parents=True, exist_ok=True)
+HIST_BIN_WIDTH = 0.5
+LATENT_ALL_COLUMNS = [
+    "TARGETID",
+    "COADD_TAG",
+    "OBS_NIGHT",
+    "SPECTRUM_INDEX",
+    *[f"Latent{i+1}" for i in range(10)],
+    "Variance",
+]
 
-    try:
-        # Raw
-        target_id, wave, flux, ivar = _load_raw_single_coadd(coadd_path)
-        if wave is None:
+
+def _load_existing_latent_keys(csv_path: Path) -> set[tuple[int, str, int]]:
+    if not csv_path.exists():
+        return set()
+
+    keys: set[tuple[int, str, int]] = set()
+    with csv_path.open("r", newline="") as source:
+        reader = csv.DictReader(source)
+        if not reader.fieldnames:
+            return keys
+
+        required = {"TARGETID", "COADD_TAG", "SPECTRUM_INDEX"}
+        if not required.issubset(set(reader.fieldnames)):
+            print(
+                "Existing latent_all_targets.csv does not have "
+                "COADD_TAG/SPECTRUM_INDEX; dedup by coadd is disabled for this run."
+            )
+            return keys
+
+        for row in reader:
+            try:
+                target_id = int(row["TARGETID"])
+                coadd_tag = str(row["COADD_TAG"])
+                spectrum_index = int(row["SPECTRUM_INDEX"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            keys.add((target_id, coadd_tag, spectrum_index))
+
+    return keys
+
+
+def _append_latent_row(csv_path: Path, row: dict[str, object]) -> None:
+    write_header = (not csv_path.exists()) or csv_path.stat().st_size == 0
+    with csv_path.open("a", newline="") as target:
+        writer = csv.DictWriter(target, fieldnames=LATENT_ALL_COLUMNS)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def _latent_to_fixed_width(latent_vec: np.ndarray, width: int = 10) -> np.ndarray:
+    fixed = np.full(width, np.nan, dtype=np.float64)
+    n_copy = min(width, latent_vec.size)
+    fixed[:n_copy] = latent_vec[:n_copy]
+    return fixed
+
+
+def _update_variance_products_from_latent_table(
+    latent_csv: Path,
+    variance_csv: Path,
+    variance_div_mean_csv: Path,
+    hist_dir: Path,
+) -> int:
+    """Recompute variance products and refresh per-latent histograms from abs(variance/mean)."""
+    if not latent_csv.exists():
+        return 0
+
+    df_all = pd.read_csv(latent_csv)
+    latent_cols_present = [f"Latent{i + 1}" for i in range(10) if f"Latent{i + 1}" in df_all.columns]
+    if len(df_all) == 0 or not latent_cols_present:
+        return 0
+
+    df_summary = (
+        df_all.groupby("TARGETID", as_index=False)[latent_cols_present]
+        .var(ddof=0)
+        .rename(columns={col: f"{col}_var" for col in latent_cols_present})
+    )
+    df_summary.to_csv(variance_csv, index=False)
+
+    df_means = (
+        df_all.groupby("TARGETID", as_index=False)[latent_cols_present]
+        .mean()
+        .rename(columns={col: f"{col}_mean" for col in latent_cols_present})
+    )
+
+    df_ratio = df_summary.merge(df_means, on="TARGETID", how="inner")
+    ratio_columns: list[str] = []
+    for latent_col in latent_cols_present:
+        var_col = f"{latent_col}_var"
+        mean_col = f"{latent_col}_mean"
+        ratio_col = f"{var_col}_over_mean_abs"
+        ratio_columns.append(ratio_col)
+
+        var_vals = np.abs(df_ratio[var_col].to_numpy(dtype=np.float64))
+        mean_vals = np.abs(df_ratio[mean_col].to_numpy(dtype=np.float64))
+        ratio_vals = np.divide(
+            var_vals,
+            mean_vals,
+            out=np.full_like(var_vals, np.nan, dtype=np.float64),
+            where=mean_vals != 0,
+        )
+        df_ratio[ratio_col] = ratio_vals
+
+    ratio_out_cols = ["TARGETID", *ratio_columns]
+    df_ratio[ratio_out_cols].to_csv(variance_div_mean_csv, index=False)
+
+    created_histograms = 0
+    for ratio_col in ratio_columns:
+        if ratio_col not in df_ratio.columns:
             continue
 
-        # Normalized
-        spec, w, z, target_id_t, norm, zerr = prepare_spectra(coadd_path, qsos)
-    except Exception as e:
-        print(f"Skipping file due to missing/invalid spectral data: {coadd_path}")
-        print(f"  problem: {e}")
-        skipped_files.append((coadd_path, str(e)))
-        continue
+        values = df_ratio[ratio_col].dropna().to_numpy(dtype=np.float64)
+        if values.size == 0:
+            continue
 
-    if len(spec) == 0:
-        print("No valid spectra after filtering. Skipping.")
-        continue
+        vmin = float(np.nanmin(values))
+        vmax = float(np.nanmax(values))
+        if np.isfinite(vmin) and np.isfinite(vmax) and vmax > vmin:
+            bin_edges = np.arange(vmin, vmax + HIST_BIN_WIDTH, HIST_BIN_WIDTH)
+            if bin_edges.size < 2:
+                bins_for_hist = "auto"
+            else:
+                bins_for_hist = bin_edges.tolist()
+        else:
+            bins_for_hist = "auto"
 
-    tileid, lastnight = parse_tileid_lastnight(coadd_path)
-    tile_txt = f"TILEID={tileid}" if tileid is not None else "TILEID=?"
-    night_txt = f"LASTNIGHT={lastnight}" if lastnight is not None else "LASTNIGHT=?"
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.hist(values, bins=bins_for_hist, color="tab:blue", alpha=0.85, edgecolor="black")
+        ax.set_title(f"Histogram of {ratio_col} across TARGETIDs")
+        ax.set_xlabel(ratio_col)
+        ax.set_ylabel("Count")
+        ax.grid(alpha=0.25)
+        fig.tight_layout()
 
-    fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=False)
+        hist_path = hist_dir / f"{ratio_col}_hist.png"
+        fig.savefig(hist_path, dpi=150)
+        plt.close(fig)
+        created_histograms += 1
 
-    axes[0].plot(wave, flux, color="gray", lw=0.8)
-    axes[0].set_title(f"Raw spectrum (TARGETID={target_id}, {tile_txt}, {night_txt})")
-    axes[0].set_xlabel("Observed Wavelength (Å)")
-    axes[0].set_ylabel("Flux")
-    axes[0].grid(alpha=0.3)
+    return created_histograms
 
-    axes[1].plot(desiQSO._wave_obs, spec[0].numpy(), color="tab:blue", lw=0.8)
-    axes[1].set_title(
-        f"Normalized spectrum (TARGETID={int(target_id_t[0])}, z={float(z[0]):.4f}, {tile_txt}, {night_txt})"
-    )
-    axes[1].set_xlabel("Observed Wavelength (Å)")
-    axes[1].set_ylabel("Normalized Flux")
-    axes[1].grid(alpha=0.3)
 
-    plt.tight_layout()
+existing_latent_keys = _load_existing_latent_keys(LATENT_ALL_CSV)
+print(f"Loaded {len(existing_latent_keys)} existing latent keys from {LATENT_ALL_CSV}")
 
-    target_dir = os.path.basename(os.path.dirname(coadd_path))
-    out_dir = os.path.join(coadd_dir, target_dir, "processed_spectra")
-    os.makedirs(out_dir, exist_ok=True)
-    out_name = os.path.splitext(os.path.basename(coadd_path))[0]
-    out_path = os.path.join(out_dir, f"{out_name}_raw_norm.png")
-    plt.savefig(out_path, dpi=150)
-    plt.close()
-    #plt.show()
-
-#===RUN SpenderQ on the normalized spectrum ===
-    # Process the already-prepared spectra for the current coadd_path
+n_done_markers = 0
+n_appended_rows = 0
+n_reconstructed = 0
 
 for coadd_path in coadd_files:
     print(f"\nProcessing: {coadd_path}")
-    #new
-    if os.path.isdir(os.path.join(coadd_dir, os.path.basename(os.path.dirname(coadd_path)), "recon")): continue
+    target_dir = os.path.basename(os.path.dirname(coadd_path))
+    coadd_tag = os.path.splitext(os.path.basename(coadd_path))[0]
+    tileid, obs_night = parse_tileid_lastnight(coadd_path)
+    tile_txt = f"TILEID={tileid}" if tileid is not None else "TILEID=?"
+    night_txt = f"LASTNIGHT={obs_night}" if obs_night is not None else "LASTNIGHT=?"
+
+    processed_dir = os.path.join(coadd_dir, target_dir, "processed_spectra")
+    recon_dir = os.path.join(coadd_dir, target_dir, "recon")
+    os.makedirs(processed_dir, exist_ok=True)
+    os.makedirs(recon_dir, exist_ok=True)
+
+    done_marker = os.path.join(recon_dir, f"{coadd_tag}.done")
+    if os.path.exists(done_marker):
+        print(f"Skip coadd (done marker exists): {done_marker}")
+        n_done_markers += 1
+        continue
+
     try:
+        raw_target_id, wave, flux, ivar = _load_raw_single_coadd(coadd_path)
+        if wave is None:
+            continue
         spec, w, z, target_id_t, norm, zerr = prepare_spectra(coadd_path, qsos)
     except Exception as e:
         print(f"Skipping file due to missing/invalid spectral data: {coadd_path}")
@@ -401,16 +582,45 @@ for coadd_path in coadd_files:
         print("No valid spectra after filtering. Skipping.")
         continue
 
-    coadd_tag = os.path.splitext(os.path.basename(coadd_path))[0]
+    raw_norm_path = os.path.join(processed_dir, f"{coadd_tag}_raw_norm.png")
+    if not os.path.exists(raw_norm_path):
+        fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=False)
+        axes[0].plot(wave, flux, color="gray", lw=0.8)
+        axes[0].set_title(f"Raw spectrum (TARGETID={raw_target_id}, {tile_txt}, {night_txt})")
+        axes[0].set_xlabel("Observed Wavelength (Å)")
+        axes[0].set_ylabel("Flux")
+        axes[0].grid(alpha=0.3)
 
+        axes[1].plot(desiQSO._wave_obs, spec[0].numpy(), color="tab:blue", lw=0.8)
+        axes[1].set_title(
+            f"Normalized spectrum (TARGETID={int(target_id_t[0])}, z={float(z[0]):.4f}, {tile_txt}, {night_txt})"
+        )
+        axes[1].set_xlabel("Observed Wavelength (Å)")
+        axes[1].set_ylabel("Normalized Flux")
+        axes[1].grid(alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(raw_norm_path, dpi=150)
+        plt.close()
+
+    coadd_success = False
     for i in range(len(target_id_t)):
-        spec_i = spec[i:i+1]
-        w_i = w[i:i+1]
-        z_i = z[i:i+1]
+        spec_i = spec[i:i + 1]
+        w_i = w[i:i + 1]
+        z_i = z[i:i + 1]
+        tid = int(target_id_t[i])
+        latent_key = (tid, coadd_tag, i)
+        recon_path = os.path.join(recon_dir, f"{coadd_tag}_target{tid}_idx{i}.png")
+
+        if latent_key in existing_latent_keys and os.path.exists(recon_path):
+            print(f"Skip spectrum (already reconstructed and logged): TARGETID={tid}, coadd={coadd_tag}, idx={i}")
+            continue
+
+        if torch.isnan(spec_i).any() or torch.isnan(w_i).any() or torch.isnan(z_i).any():
+            print(f"Skipping TARGETID {tid} ({coadd_tag}) due to NaNs")
+            continue
 
         try:
             s, recon = spender.eval(spec_i, w_i, z_i)
-        
         except IndexError as e:
             print(f"IndexError in Lyα absorption for index {i}: {e}")
             print("Falling back to encode/decode without Lyα masking...")
@@ -419,82 +629,71 @@ for coadd_path in coadd_files:
                 s = spender.models[0][0].encode(spec_i)
                 recon = np.array(spender.models[0][0].decode(s))
         except Exception as e:
-            # skip spectra that cause ValueError/NaN issues (e.g. in LyA.identify_absorp)
             print(f"Skipping spectrum {i} due to error: {e}")
             continue
 
-        print(f"[{i}] Latent shape: {s.shape}, recon shape: {recon.shape}")
-
-        # Plot normalized vs reconstruction (rest-frame) and store for combined plotting
         wave_recon = spender.wave_recon()
         z0 = float(z_i[0].cpu().numpy())
         wave_rest = (desiQSO._wave_obs / (1.0 + z0)).cpu().numpy()
+        obs_spec = spec_i[0].cpu().numpy()
 
-        # save arrays into recon_store per TARGETID, include redshift and observation date
-        tid = int(target_id_t[i])
-        # compute observation date (lastnight) from coadd filename
-        tileid, lastnight = parse_tileid_lastnight(coadd_path)
-        recon_store.setdefault(tid, {"specs": [], "recons": []})
-        recon_store[tid]["specs"].append((wave_rest, spec_i[0].cpu().numpy(), z0, lastnight))
-        recon_store[tid]["recons"].append((wave_recon, recon[0], z0, lastnight))
+        # Save each reconstruction immediately so walltime interruptions keep prior outputs.
+        fig, ax = plt.subplots(figsize=(12, 4))
+        ax.plot(wave_rest, obs_spec, color="tab:blue", lw=0.7, alpha=0.9, label="Observed")
+        ax.plot(wave_recon, recon[0], color="tab:red", lw=0.7, alpha=0.95, label="SpenderQ recon")
+        ax.set_title(f"SpenderQ - TARGETID {tid} ({coadd_tag}, z={z0:.4f})")
+        ax.set_xlabel("Rest Wavelength (Å)")
+        ax.set_ylabel("Flux")
+        ax.grid(alpha=0.25)
+        ax.legend(loc="best")
+        fig.tight_layout()
+        fig.savefig(recon_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
 
-        # store only; individual saving will be done after collecting all spectra
-        # (this allows consistent y-limits across all plots for the same TARGETID)
+        latent_vector = np.asarray(s.detach().cpu().numpy()).reshape(-1)
+        latent_10 = _latent_to_fixed_width(latent_vector, width=10)
+        latent_variance = np.nanvar(latent_10[:9]) if latent_10.shape[0] >= 9 else np.nan
 
-#====read latent space====
-latent_list = []
-target_id_list = []
+        if latent_key not in existing_latent_keys:
+            latent_row: dict[str, object] = {
+                "TARGETID": tid,
+                "COADD_TAG": coadd_tag,
+                "OBS_NIGHT": obs_night if obs_night is not None else "",
+                "SPECTRUM_INDEX": i,
+                "Variance": float(latent_variance) if np.isfinite(latent_variance) else np.nan,
+            }
+            for j in range(10):
+                value = latent_10[j]
+                latent_row[f"Latent{j + 1}"] = float(value) if np.isfinite(value) else np.nan
 
-for coadd_path in coadd_files:
-    try:
-        spec, w, z, target_id_t, norm, zerr = prepare_spectra(coadd_path, qsos)
-    except Exception as e:
-        print(f"Skipping file due to missing/invalid spectral data: {coadd_path}")
-        print(f"  problem: {e}")
-        skipped_files.append((coadd_path, str(e)))
-        continue
+            _append_latent_row(LATENT_ALL_CSV, latent_row)
+            existing_latent_keys.add(latent_key)
+            n_appended_rows += 1
+            n_hist = _update_variance_products_from_latent_table(
+                LATENT_ALL_CSV,
+                LATENT_VAR_CSV,
+                LATENT_VAR_DIV_MEAN_CSV,
+                LATENT_HIST_DIR,
+            )
+            print(
+                f"Updated variance tables and {n_hist} histogram(s) after append: "
+                f"{LATENT_VAR_CSV}, {LATENT_VAR_DIV_MEAN_CSV}, {LATENT_HIST_DIR}"
+            )
 
-    if len(spec) == 0:
-        continue
-    _, obs_night = parse_tileid_lastnight(coadd_path)
+        n_reconstructed += 1
+        coadd_success = True
+        print(f"Saved recon and latent row: TARGETID={tid}, coadd={coadd_tag}, idx={i}")
 
-    for i in range(len(spec)):
-        spec_i = spec[i:i+1]
-        w_i    = w[i:i+1]
-        z_i    = z[i:i+1]
-        target_id_val = int(target_id_t[i])
+    if coadd_success:
+        Path(done_marker).touch()
+        print(f"Wrote done marker: {done_marker}")
+    else:
+        print("No successful spectra for this coadd; done marker not written.")
 
-        # Skip NaNs early
-        if np.isnan(spec_i).any() or np.isnan(w_i).any() or np.isnan(z_i).any():
-            print(f"Skipping TARGETID {target_id_val} (obs {obs_night}) due to NaNs")
-            continue
-
-        # Convert to torch tensors
-        spec_i_tensor = torch.tensor(spec_i, dtype=torch.float32)
-        w_i_tensor    = torch.tensor(w_i, dtype=torch.float32)
-        z_i_tensor    = torch.tensor(z_i, dtype=torch.float32)
-
-        # Safely run SpenderQ
-        try:
-            s, recon = spender.eval(spec_i_tensor, w_i_tensor, z_i_tensor)
-            print(f"Successfully ran SpenderQ on TARGETID {target_id_val} (obs {obs_night})")
-            latent_list.append(s.cpu().numpy().flatten())  # save latent vector
-            target_id_list.append(target_id_val)
-        except Exception as e:
-            print(f"I couldn't run SpenderQ on TARGETID {target_id_val} (obs {obs_night}): {e}")
-            continue
-
-# Stack all latent vectors
-if latent_list:
-    latent = np.array(latent_list)  # shape (n_samples, latent_dim)
-    target_ids_array = np.array(target_id_list)
-    print(f"Collected {latent.shape[0]} latent vectors of size {latent.shape[1]}")
-else:
-    latent = np.empty((0, 0), dtype=np.float32)
-    target_ids_array = np.array([], dtype=np.int64)
-    print("No latent vectors collected — check your data!")
-
-print(target_id_list)
+print(
+    f"\nRun summary: reconstructed={n_reconstructed}, "
+    f"appended_rows={n_appended_rows}, skipped_done_markers={n_done_markers}"
+)
 
 if skipped_files:
     print("\n=== Skipped files summary ===")
@@ -507,231 +706,20 @@ if skipped_files:
         print(f"- {path}")
         print(f"  problem: {reason}")
 
-# ==== download the latent space and target IDs in CSV ====
-        
-out_dir = "/work/11161/kanyuni/ls6/quassiQ/latent"
-os.makedirs(out_dir, exist_ok=True)
-
-rows = []
-summary_rows = []
-for targetid in np.unique(target_ids_array) if target_ids_array.size > 0 else []:
-    mask = target_ids_array == targetid
-    latent_for_target = latent[mask]
-    if latent_for_target.size == 0:
-        continue
-
-    n_samples, latent_dim = latent_for_target.shape
-
-    # ensure exactly 10 latent columns (truncate or pad with NaN)
-    if latent_dim >= 10:
-        lat10 = latent_for_target[:, :10]
-    else:
-        pad = np.full((n_samples, 10 - latent_dim), np.nan)
-        lat10 = np.hstack([latent_for_target, pad])
-
-    # per-row variance over first 9 latents (indices 0..8)
-    var_per_row = np.full(n_samples, np.nan)
-    if lat10.shape[1] >= 9:
-        var_per_row = np.nanvar(lat10[:, :9], axis=1)
-
-    # append per-spectrum rows (TARGETID, Latent1..Latent10, Variance)
-    for r, v in zip(lat10, var_per_row):
-        rows.append([int(targetid)] + list(r.tolist()) + [float(v) if np.isfinite(v) else np.nan])
-
-    # per-id summary: variance across spectra for each latent dimension (use nanvar)
-    var_per_dim = np.nanvar(lat10, axis=0)  # shape (10,)
-    summary_rows.append([int(targetid)] + [float(x) if np.isfinite(x) else np.nan for x in var_per_dim])
-
-# save full table (one row per spectrum)
-if len(rows) > 0:
-    cols = ["TARGETID"] + [f"Latent{i+1}" for i in range(10)] + ["Variance"]
-    df_all = pd.DataFrame(rows, columns=cols)
-    out_csv = os.path.join(out_dir, "latent_all_targets.csv")
-    df_all.to_csv(out_csv, index=False)
-    print(f"Saved {out_csv} ({len(df_all)} rows)")
+# Ensure summary products are present even if this run appends no new rows.
+if LATENT_ALL_CSV.exists():
+    n_hist = _update_variance_products_from_latent_table(
+        LATENT_ALL_CSV,
+        LATENT_VAR_CSV,
+        LATENT_VAR_DIV_MEAN_CSV,
+        LATENT_HIST_DIR,
+    )
+    print(
+        f"Final variance refresh complete: {LATENT_VAR_CSV}, {LATENT_VAR_DIV_MEAN_CSV}; "
+        f"histograms available: {n_hist} in {LATENT_HIST_DIR}"
+    )
 else:
-    print("No latent rows to save.")
-
-# save per-target summary (one row per TARGETID) with variances per latent dim
-if len(summary_rows) > 0:
-    summary_cols = ["TARGETID"] + [f"Latent{i+1}_var" for i in range(10)]
-    df_summary = pd.DataFrame(summary_rows, columns=summary_cols)
-    summary_csv = os.path.join(out_dir, "latent_variance_by_target.csv")
-    df_summary.to_csv(summary_csv, index=False)
-    print(f"Saved {summary_csv} ({len(df_summary)} rows)")
-
-
-# ==== create per-target plots (per-spectrum PNGs) ====
-from itertools import zip_longest
-
-for tid, data in recon_store.items():
-    specs = data.get("specs", [])
-    recons = data.get("recons", [])
-    if len(specs) == 0 and len(recons) == 0:
-        continue
-
-    # choose the spectrum+recon pair with the largest dynamic range
-    # and use its min/max as the shared y-limits for all individual plots
-    n_pairs = max(len(specs), len(recons))
-    best_min = None
-    best_max = None
-    best_range = -1.0
-    for idx in range(n_pairs):
-        vals = []
-        if idx < len(specs):
-            _, sp, _, _ = specs[idx]
-            if getattr(sp, "size", 0):
-                vals.append(np.asarray(sp).ravel())
-        if idx < len(recons):
-            _, rc, _, _ = recons[idx]
-            if getattr(rc, "size", 0):
-                vals.append(np.asarray(rc).ravel())
-        if len(vals) == 0:
-            continue
-        arr = np.concatenate([v for v in vals if v.size > 0])
-        lo = float(np.nanmin(arr))
-        hi = float(np.nanmax(arr))
-        rng = hi - lo
-        if rng > best_range:
-            best_range = rng
-            best_min = lo
-            best_max = hi
-
-    # fallback to overall range if nothing found
-    if best_min is None:
-        all_vals = []
-        for wv, sp, z_s, obs in specs:
-            if getattr(sp, "size", 0):
-                all_vals.append(sp.ravel())
-        for wv, rc, z_r, obs_r in recons:
-            if getattr(rc, "size", 0):
-                all_vals.append(rc.ravel())
-        if len(all_vals) == 0:
-            continue
-        arr = np.concatenate(all_vals)
-        best_min = float(np.nanmin(arr))
-        best_max = float(np.nanmax(arr))
-
-    ymin = best_min
-    ymax = best_max
-    if ymax <= ymin:
-        ymax = ymin + 1.0
-
-    # prepare recon directory and clear previous files
-    target_dir = os.path.join(coadd_dir, str(tid))
-    recon_dir = os.path.join(target_dir, "recon")
-    os.makedirs(recon_dir, exist_ok=True)
-    if os.path.isdir(recon_dir):
-        for _f in os.listdir(recon_dir):
-            _p = os.path.join(recon_dir, _f)
-            try:
-                if os.path.isfile(_p) or os.path.islink(_p):
-                    os.remove(_p)
-                elif os.path.isdir(_p):
-                    shutil.rmtree(_p)
-            except Exception:
-                pass
-
-    # iterate over pairs of (spec, recon) and save simple per-spectrum plots
-    for idx in range(max(len(specs), len(recons))):
-        spec_tuple = specs[idx] if idx < len(specs) else None
-        recon_tuple = recons[idx] if idx < len(recons) else None
-        if spec_tuple is None:
-            continue
-        wv_s, sp, z_s, obs = spec_tuple
-        wv_r, rc, z_r, obs_r = recon_tuple if recon_tuple is not None else (None, None, None, None)
-
-        plt.figure(figsize=(12, 4))
-        plt.plot(wv_s, sp, color="tab:blue", lw=0.7, alpha=0.9, label="Observed")
-        if rc is not None:
-            plt.plot(wv_r, rc, color="tab:red", lw=0.7, alpha=0.95, label="SpenderQ recon")
-        plt.title(f"SpenderQ — TARGETID {tid} (obs {obs}, z={z_s:.4f})")
-        plt.xlabel("Rest Wavelength (Å)")
-        plt.ylabel("Flux")
-        # use the shared y-limits (from the widest pair)
-        plt.ylim(ymin, ymax)
-        plt.grid(alpha=0.25)
-        plt.legend()
-        out_fname = f"{tid}_obs{obs}_z{z_s:.4f}_idx{idx}.png"
-        out_path = os.path.join(recon_dir, out_fname)
-        # remove existing file if present (clear before save)
-        try:
-            if os.path.exists(out_path):
-                os.remove(out_path)
-        except Exception:
-            pass
-        plt.savefig(out_path, dpi=150, bbox_inches="tight")
-        plt.close()
-
-    # save three overlays per target: recon only, observation only, and both
-    if len(specs) > 0 or len(recons) > 0:
-        def _compute_ylim(arrays, fallback_min, fallback_max):
-            valid = [np.asarray(a).ravel() for a in arrays if getattr(a, "size", 0)]
-            if len(valid) == 0:
-                return fallback_min, fallback_max
-            vals = np.concatenate(valid)
-            lo = float(np.nanmin(vals))
-            hi = float(np.nanmax(vals))
-            if hi <= lo:
-                hi = lo + 1.0
-            return lo, hi
-
-        def _overlay_colors(n):
-            if n <= 0:
-                return []
-            priority_colors = ["indianred", "steelblue", "seagreen"]
-            if n <= 3:
-                return priority_colors[:n]
-            cmap = plt.get_cmap("viridis") if n > 10 else plt.get_cmap("tab10")
-            return [cmap(i / max(1, n - 1)) for i in range(n)]
-
-        n_obs_colors = max(1, len(specs))
-        n_rec_colors = max(1, len(recons))
-        obs_colors = _overlay_colors(n_obs_colors)
-        rec_colors = _overlay_colors(n_rec_colors)
-
-        # 1) reconstruction overlay
-        if len(recons) > 0:
-            rec_vals = [np.asarray(rc).ravel() for (_, rc, _, _) in recons if getattr(rc, "size", 0)]
-            if len(rec_vals) > 0:
-                rec_arr = np.concatenate(rec_vals)
-                o_min = float(np.nanmin(rec_arr))
-                o_max = float(np.nanmax(rec_arr))
-                if o_max <= o_min:
-                    o_max = o_min + 1.0
-            else:
-                o_min, o_max = ymin, ymax
-
-            plt.figure(figsize=(14, 6))
-            for j, (wv_r, rc, z_r, obs_r) in enumerate(recons):
-                lbl = f"obs {obs_r} (z={z_r:.4f})"
-                plt.plot(wv_r, rc, color=rec_colors[j % len(rec_colors)], lw=0.7, label=lbl, alpha=0.3)
-
-            plt.title(f"All Reconstructed Spectra — TARGETID {tid}")
-            plt.xlabel("Rest Wavelength (Å)")
-            plt.ylabel("Flux")
-            plt.ylim(o_min, o_max)
-            plt.grid(alpha=0.25)
-            plt.legend(loc="best", fontsize="small")
-            overlay_path = os.path.join(recon_dir, f"TARGETID_{tid}_all_recons_overlay.png")
-            plt.savefig(overlay_path, dpi=150, bbox_inches="tight")
-            plt.close()
-
-        # 2) observation overlay (pre-SpenderQ normalized input spectra)
-        if len(specs) > 0:
-            s_min, s_max = _compute_ylim([sp for (_, sp, _, _) in specs], ymin, ymax)
-            plt.figure(figsize=(14, 6))
-            for j, (wv_s, sp, z_s, obs_s) in enumerate(specs):
-                plt.plot(wv_s, sp, color=obs_colors[j % len(obs_colors)], lw=0.7, alpha=0.30, linestyle="-", label=f"obs {obs_s} observed")
-            plt.title(f"Observed Spectra Overlay — TARGETID {tid}")
-            plt.xlabel("Rest Wavelength (Å)")
-            plt.ylabel("Flux")
-            plt.ylim(s_min, s_max)
-            plt.grid(alpha=0.25)
-            plt.legend(loc="best", fontsize="small")
-            obs_overlay_path = os.path.join(recon_dir, f"TARGETID_{tid}_obs_overlay.png")
-            plt.savefig(obs_overlay_path, dpi=150, bbox_inches="tight")
-            plt.close()
+    print(f"No latent table found at {LATENT_ALL_CSV}; skipping summary products.")
 
 
 def compute_target_latent_means(input_csv: Path, output_csv: Path) -> None:
@@ -864,7 +852,7 @@ def divide_variance_by_mean(
                     output_row.append("")
                     continue
 
-                ratio = float(var_value) / mean_value
+                ratio = abs(float(var_value)) / abs(mean_value)
                 output_row.append(f"{ratio:.12f}")
 
             output_rows.append(output_row)
@@ -877,7 +865,7 @@ def divide_variance_by_mean(
             f"{missing_sorted}"
         )
 
-    output_header = ["TARGETID", *[f"{column}_over_mean" for column in variance_columns]]
+    output_header = ["TARGETID", *[f"{column}_over_mean_abs" for column in variance_columns]]
     with output_csv.open("w", newline="") as target:
         writer = csv.writer(target)
         writer.writerow(output_header)
