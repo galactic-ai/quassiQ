@@ -952,16 +952,11 @@ def plot_latents_by_target(input_csv: Path, output_dir: Path) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     created_files: list[Path] = []
     x_positions = list(range(len(target_ids)))
-    highlight_suffixes = ("87", "25", "31", "86")
-    point_colors = [
-        "tab:orange" if any(target_id.endswith(suffix) for suffix in highlight_suffixes) else "tab:blue"
-        for target_id in target_ids
-    ]
 
     for column in latent_columns:
         fig, axis = plt.subplots(figsize=(12, 4))
         y_values = values_by_latent[column]
-        axis.scatter(x_positions, y_values, s=24, c=point_colors)
+        axis.scatter(x_positions, y_values, s=24, c="tab:blue")
         axis.set_title(f"{column} across TARGETIDs")
         axis.set_xlabel("TARGETID")
         axis.set_ylabel(column)
