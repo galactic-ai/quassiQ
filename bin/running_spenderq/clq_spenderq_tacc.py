@@ -126,6 +126,69 @@ tile_table.pprint_all()
 recon_store = {}
 skipped_files = []
 
+
+def _save_target_overlays(target_id: int, store: dict[str, list[tuple[np.ndarray, np.ndarray, str]]], recon_dir: Path) -> None:
+    """Save per-target overlay plots for observed, reconstructed, and combined spectra."""
+    obs_entries = store.get("obs", [])
+    recon_entries = store.get("recon", [])
+
+    if len(obs_entries) == 0 and len(recon_entries) == 0:
+        return
+
+    recon_dir.mkdir(parents=True, exist_ok=True)
+
+    def _plot_overlay(
+        entries: list[tuple[np.ndarray, np.ndarray, str]],
+        title: str,
+        out_path: Path,
+        y_label: str,
+    ) -> None:
+        if len(entries) == 0:
+            return
+
+        fig, ax = plt.subplots(figsize=(14, 6))
+        for wave_values, flux_values, label in entries:
+            ax.plot(wave_values, flux_values, lw=0.8, alpha=0.35, label=label)
+
+        ax.set_title(title)
+        ax.set_xlabel("Rest Wavelength (A)")
+        ax.set_ylabel(y_label)
+        ax.grid(alpha=0.25)
+        ax.legend(loc="best", fontsize="small")
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
+    _plot_overlay(
+        obs_entries,
+        f"Observed Spectra Overlay - TARGETID {target_id}",
+        recon_dir / f"TARGETID_{target_id}_obs_overlay.png",
+        "Flux",
+    )
+
+    _plot_overlay(
+        recon_entries,
+        f"Reconstructed Spectra Overlay - TARGETID {target_id}",
+        recon_dir / f"TARGETID_{target_id}_recon_overlay.png",
+        "Flux",
+    )
+
+    if len(obs_entries) > 0 and len(recon_entries) > 0:
+        fig, ax = plt.subplots(figsize=(14, 6))
+        for wave_values, flux_values, label in obs_entries:
+            ax.plot(wave_values, flux_values, lw=0.8, alpha=0.35, label=f"obs {label}")
+        for wave_values, flux_values, label in recon_entries:
+            ax.plot(wave_values, flux_values, lw=0.8, alpha=0.35, linestyle="--", label=f"recon {label}")
+
+        ax.set_title(f"Observed + Reconstructed Overlay - TARGETID {target_id}")
+        ax.set_xlabel("Rest Wavelength (A)")
+        ax.set_ylabel("Flux")
+        ax.grid(alpha=0.25)
+        ax.legend(loc="best", fontsize="small")
+        fig.tight_layout()
+        fig.savefig(recon_dir / f"TARGETID_{target_id}_obs_recon_overlay.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
 def prepare_spectra(coadd_path, qsos):
     """Prepare a single-coadd QSO spectrum file (B/R/Z) into SpenderQ inputs."""
     with fits.open(coadd_path) as hdul:
@@ -418,6 +481,8 @@ LATENT_HIST_DIR.mkdir(parents=True, exist_ok=True)
 TARGET_HIST_BINS = 20
 HIGH_RATIO_PERCENTILE = 95.0
 HIGH_RATIO_TOP_N = 10
+# Enable restart done-markers by default for resumable long runs.
+ENABLE_DONE_MARKERS = False
 LATENT_ALL_COLUMNS = [
     "TARGETID",
     "COADD_TAG",
@@ -672,8 +737,11 @@ def _update_variance_products_from_latent_table(
         if np.isfinite(vmin) and np.isfinite(vmax) and vmax > vmin:
             bin_width = _adaptive_bin_width(vmin, vmax)
             start = np.floor(vmin / bin_width) * bin_width
-            stop = np.ceil(vmax / bin_width) * bin_width + bin_width
-            bin_edges = np.arange(start, stop, bin_width)
+            # Keep a constant bin width within each histogram.
+            n_bins = int(np.ceil((vmax - start) / bin_width))
+            stop = start + max(1, n_bins) * bin_width
+            bin_edges = np.arange(start, stop + (0.5 * bin_width), bin_width, dtype=np.float64)
+
             if bin_edges.size < 2:
                 bins_for_hist = "auto"
             else:
@@ -683,11 +751,26 @@ def _update_variance_products_from_latent_table(
 
         fig, ax = plt.subplots(figsize=(8, 5))
         counts, _, _ = ax.hist(values, bins=bins_for_hist, color="tab:blue", alpha=0.85, edgecolor="black")
+        threshold_value = float(np.nanpercentile(values, HIGH_RATIO_PERCENTILE))
+        ax.axvline(
+            threshold_value,
+            color="tab:orange",
+            linestyle="--",
+            linewidth=1.5,
+            label=(
+                f"{HIGH_RATIO_PERCENTILE:.0f}th pct threshold = {threshold_value:.4g}"
+                f" (max = {vmax:.4g})"
+            ),
+        )
         ax.set_title(f"Histogram of {ratio_col} across TARGETIDs")
         ax.set_xlabel(ratio_col)
         ax.set_ylabel("Count")
-        # Use readable auto ticks as counts grow to avoid crowded 0,1,2,... labels.
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=8, integer=False))
+        # Histogram counts are discrete; keep ticks on integer values and avoid scientific notation.
+        y_max = float(np.nanmax(counts)) if counts.size > 0 else 0.0
+        ax.set_ylim(bottom=0, top=(y_max * 1.1 + 1.0) if y_max > 0 else 1.0)
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=8, integer=True, min_n_ticks=3))
+        ax.ticklabel_format(axis="y", style="plain", useOffset=False)
+        ax.legend(loc="best", fontsize="small")
         ax.grid(alpha=0.25)
         fig.tight_layout()
 
@@ -732,7 +815,7 @@ for coadd_path in coadd_files:
     os.makedirs(recon_dir, exist_ok=True)
 
     done_marker = os.path.join(recon_dir, f"{coadd_tag}.done")
-    if os.path.exists(done_marker):
+    if ENABLE_DONE_MARKERS and os.path.exists(done_marker):
         print(f"Skip coadd (done marker exists): {done_marker}")
         n_done_markers += 1
         continue
@@ -820,6 +903,11 @@ for coadd_path in coadd_files:
         fig.savefig(recon_path, dpi=150, bbox_inches="tight")
         plt.close(fig)
 
+        obs_label = f"{coadd_tag} | obs={obs_night if obs_night is not None else '?'} | z={z0:.4f}"
+        target_store = recon_store.setdefault(tid, {"obs": [], "recon": []})
+        target_store["obs"].append((wave_rest, obs_spec, obs_label))
+        target_store["recon"].append((wave_recon, recon[0], obs_label))
+
         latent_vector = np.asarray(s.detach().cpu().numpy()).reshape(-1)
         latent_10 = _latent_to_fixed_width(latent_vector, width=10)
         latent_variance = np.nanvar(latent_10[:9]) if latent_10.shape[0] >= 9 else np.nan
@@ -857,9 +945,11 @@ for coadd_path in coadd_files:
         coadd_success = True
         print(f"Saved recon and latent row: TARGETID={tid}, coadd={coadd_tag}, idx={i}")
 
-    if coadd_success:
+    if coadd_success and ENABLE_DONE_MARKERS:
         Path(done_marker).touch()
         print(f"Wrote done marker: {done_marker}")
+    elif coadd_success:
+        print("Done markers disabled; not writing .done file.")
     else:
         print("No successful spectra for this coadd; done marker not written.")
 
@@ -867,6 +957,11 @@ print(
     f"\nRun summary: reconstructed={n_reconstructed}, "
     f"appended_rows={n_appended_rows}, skipped_done_markers={n_done_markers}"
 )
+
+for target_id, store in recon_store.items():
+    overlay_recon_dir = Path(coadd_dir) / str(target_id) / "recon"
+    _save_target_overlays(target_id, store, overlay_recon_dir)
+    print(f"Saved overlay plots for TARGETID={target_id} in {overlay_recon_dir}")
 
 if skipped_files:
     print("\n=== Skipped files summary ===")
@@ -1046,103 +1141,5 @@ def divide_variance_by_mean(
         writer = csv.writer(target)
         writer.writerow(output_header)
         writer.writerows(output_rows)
-
-
-def plot_latents_by_target(input_csv: Path, output_dir: Path) -> list[Path]:
-    with input_csv.open("r", newline="") as source:
-        reader = csv.DictReader(source)
-        if not reader.fieldnames:
-            raise ValueError("Plot input CSV is missing a header.")
-        if "TARGETID" not in reader.fieldnames:
-            raise ValueError("Plot input CSV must contain TARGETID.")
-
-        latent_columns = [
-            column
-            for column in reader.fieldnames
-            if column.startswith("Latent")
-            and not column.endswith("_var")
-            and "_over_mean" not in column
-        ]
-        if not latent_columns:
-            raise ValueError("No latent columns found to plot (expected Latent1 ... Latent10).")
-
-        def latent_sort_key(name: str) -> tuple[int, str]:
-            digits = "".join(char for char in name if char.isdigit())
-            return (int(digits), name) if digits else (9999, name)
-
-        latent_columns = sorted(latent_columns, key=latent_sort_key)
-
-        target_ids: list[str] = []
-        values_by_latent: dict[str, list[float]] = {column: [] for column in latent_columns}
-
-        for row in reader:
-            target_id = row.get("TARGETID", "")
-            if target_id == "":
-                continue
-            target_ids.append(target_id)
-
-            for column in latent_columns:
-                value = row.get(column, "")
-                if value in (None, ""):
-                    values_by_latent[column].append(float("nan"))
-                else:
-                    values_by_latent[column].append(float(value))
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    created_files: list[Path] = []
-    x_positions = list(range(len(target_ids)))
-
-    for column in latent_columns:
-        fig, axis = plt.subplots(figsize=(12, 4))
-        y_values = values_by_latent[column]
-        axis.scatter(x_positions, y_values, s=24, c="tab:blue")
-        axis.set_title(f"{column} across TARGETIDs")
-        axis.set_xlabel("TARGETID")
-        axis.set_ylabel(column)
-        axis.set_xticks(x_positions)
-        axis.set_xticklabels(target_ids, rotation=90, fontsize=8)
-        axis.grid(axis="x", alpha=0.3)
-
-        for x_value, y_value in zip(x_positions, y_values):
-            if y_value != y_value:
-                continue
-            axis.annotate(
-                f"{y_value:.3f}",
-                (x_value, y_value),
-                textcoords="offset points",
-                xytext=(0, 5),
-                ha="center",
-                fontsize=7,
-            )
-        fig.tight_layout()
-
-        plot_path = output_dir / f"{column}_across_targets.png"
-        fig.savefig(plot_path, dpi=150)
-        print(f"Saved histogram: {plot_path}")
-        plt.close(fig)
-        created_files.append(plot_path)
-
-    return created_files
-
-
-# ==== create per-target latent means and latent plots ====
-latent_all_csv = Path("/work/11161/kanyuni/ls6/quassiQ/latent/latent_all_targets.csv")
-latent_mean_csv = Path("/work/11161/kanyuni/ls6/quassiQ/latent/latent_mean_by_target.csv")
-latent_plot_dir = Path("/work/11161/kanyuni/ls6/quassiQ/latent/plot")
-
-if latent_all_csv.exists():
-    compute_target_latent_means(latent_all_csv, latent_mean_csv)
-    print(f"Saved {latent_mean_csv}")
-    created_files = plot_latents_by_target(latent_mean_csv, latent_plot_dir)
-    print(f"Generated {len(created_files)} latent plots in {latent_plot_dir}")
-else:
-    print(f"Skipping latent plots: missing {latent_all_csv}")
-
-
-
-
-
-
-    
 
 
