@@ -6,7 +6,7 @@ from typing import Any, Optional, cast
 
 import matplotlib
 matplotlib.use("Agg")
-sys.path.append('/work/11161/kanyuni/ls6/quassiQ/spenderq/src')
+sys.path.append('/work2/11161/kanyuni/ls6/quassiQ/spenderq/src')
 from spenderq.spenderq import SpenderQ
 spender = SpenderQ("qso.dr1.hiz")
 
@@ -62,15 +62,22 @@ def get_args():
         default=None,
         help="Optional TARGETIDs to process (space or comma separated).",
     )
+    parser.add_argument(
+        "--force-overlay",
+        action="store_true",
+        help=(
+            "Recompute spectra that are already reconstructed/logged so overlay plots can be "
+            "(re)generated for selected TARGETIDs."
+        ),
+    )
     return parser.parse_args()
 
 
 args = get_args()
 
 desiQSO = desi_qso.DESI()
-coadd_dir = "/work/11161/kanyuni/ls6/quassiQ/coadds"
+coadd_dir = "/work2/11161/kanyuni/ls6/quassiQ/coadds"
 coadd_files = sorted(glob.glob(os.path.join(coadd_dir, "*", "coadd-*.fits")))
-#coadd_files = sorted(glob.glob(os.path.join(coadd_dir, "39627853670650224", "coadd-*.fits")))
 
 requested_ids_raw = list(args.positional_target_ids or [])
 requested_target_ids: list[str] = []
@@ -99,7 +106,7 @@ else:
     print(f"Found {len(coadd_files)} coadd files across all TARGETIDs")
 
 len(coadd_files)
-qsos = Table.read('/work/11161/kanyuni/ls6/quassiQ/catalog/CLQ_candidates.csv')
+qsos = Table.read('/work2/11161/kanyuni/ls6/quassiQ/catalog/CLQ_candidates.csv')
 
 # ========= Function for renormalization =============================
 
@@ -107,7 +114,8 @@ import re
 
 def parse_tileid_lastnight(path):
     name = os.path.basename(path)
-    m = re.match(r"coadd-\d+-(\d+)-(\d+)-\d+\.fits$", name)
+    # Accept optional suffixes (e.g. _tmp98511) before .fits.
+    m = re.match(r"coadd-\d+-(\d+)-(\d+)-\d+(?:_[^.]+)*\.fits$", name)
     if not m:
         return None, None
     tileid = int(m.group(1))
@@ -125,6 +133,34 @@ tile_table.pprint_all()
 # store per-target spectra and reconstructions
 recon_store = {}
 skipped_files = []
+
+
+def _spectrum_suffix(spectrum_index: int) -> str:
+    return "" if int(spectrum_index) == 0 else f"_idx{int(spectrum_index)}"
+
+
+def _product_stem(coadd_tag: str, target_id: int, spectrum_index: int) -> str:
+    return f"{coadd_tag}_target{int(target_id)}{_spectrum_suffix(spectrum_index)}"
+
+
+def _cleanup_stale_recon_products(recon_dir: Path, target_id: int, coadd_tag: str) -> None:
+    """Remove stale products for one coadd/target while preserving overlay PNGs."""
+    if not recon_dir.exists():
+        return
+
+    keep_names = {
+        f"TARGETID_{int(target_id)}_obs_overlay.png",
+        f"TARGETID_{int(target_id)}_recon_overlay.png",
+    }
+    prefix = f"{coadd_tag}_target{int(target_id)}"
+
+    for child in recon_dir.iterdir():
+        if child.name in keep_names:
+            continue
+        if not child.is_file():
+            continue
+        if child.name.startswith(prefix):
+            child.unlink(missing_ok=True)
 
 
 def _save_target_overlays(target_id: int, store: dict[str, list[tuple[np.ndarray, np.ndarray, str]]], recon_dir: Path) -> None:
@@ -173,21 +209,54 @@ def _save_target_overlays(target_id: int, store: dict[str, list[tuple[np.ndarray
         "Flux",
     )
 
-    if len(obs_entries) > 0 and len(recon_entries) > 0:
-        fig, ax = plt.subplots(figsize=(14, 6))
-        for wave_values, flux_values, label in obs_entries:
-            ax.plot(wave_values, flux_values, lw=0.8, alpha=0.35, label=f"obs {label}")
-        for wave_values, flux_values, label in recon_entries:
-            ax.plot(wave_values, flux_values, lw=0.8, alpha=0.35, linestyle="--", label=f"recon {label}")
 
-        ax.set_title(f"Observed + Reconstructed Overlay - TARGETID {target_id}")
-        ax.set_xlabel("Rest Wavelength (A)")
-        ax.set_ylabel("Flux")
-        ax.grid(alpha=0.25)
-        ax.legend(loc="best", fontsize="small")
-        fig.tight_layout()
-        fig.savefig(recon_dir / f"TARGETID_{target_id}_obs_recon_overlay.png", dpi=150, bbox_inches="tight")
-        plt.close(fig)
+def _save_recon_spectrum_fits(
+    out_path: Path,
+    target_id: int,
+    coadd_tag: str,
+    spectrum_index: int,
+    z_value: float,
+    wave_obs: np.ndarray,
+    wave_rest: np.ndarray,
+    observed_flux: np.ndarray,
+    initial_weight: np.ndarray,
+    updated_weight: np.ndarray,
+    wave_recon: np.ndarray,
+    recon_flux: np.ndarray,
+    latent_vector: np.ndarray,
+) -> None:
+    """Persist one reconstructed spectrum so it can be copied and plotted elsewhere."""
+    primary_hdu = fits.PrimaryHDU()
+    primary_hdu.header["TARGETID"] = int(target_id)
+    primary_hdu.header["COADDTAG"] = str(coadd_tag)
+    primary_hdu.header["SPECIDX"] = int(spectrum_index)
+    primary_hdu.header["Z"] = float(z_value)
+
+    spec_cols = [
+        fits.Column(name="WAVE_OBS", format="D", array=np.asarray(wave_obs, dtype=np.float64)),
+        fits.Column(name="WAVE_REST", format="D", array=np.asarray(wave_rest, dtype=np.float64)),
+        fits.Column(name="OBS_FLUX", format="D", array=np.asarray(observed_flux, dtype=np.float64)),
+    ]
+    spec_hdu = fits.BinTableHDU.from_columns(spec_cols, name="OBSERVED")
+
+    weight_cols = [
+        fits.Column(name="WAVE_OBS", format="D", array=np.asarray(wave_obs, dtype=np.float64)),
+        fits.Column(name="W_INIT", format="D", array=np.asarray(initial_weight, dtype=np.float64)),
+        fits.Column(name="W_UPDATED", format="D", array=np.asarray(updated_weight, dtype=np.float64)),
+    ]
+    weight_hdu = fits.BinTableHDU.from_columns(weight_cols, name="WEIGHT")
+
+    recon_cols = [
+        fits.Column(name="WAVE_RECON", format="D", array=np.asarray(wave_recon, dtype=np.float64)),
+        fits.Column(name="RECON_FLUX", format="D", array=np.asarray(recon_flux, dtype=np.float64)),
+    ]
+    recon_hdu = fits.BinTableHDU.from_columns(recon_cols, name="RECON")
+
+    latent_arr = np.asarray(latent_vector, dtype=np.float64).reshape(1, -1)
+    latent_hdu = fits.ImageHDU(data=latent_arr, name="LATENT")
+
+    hdul = fits.HDUList([primary_hdu, spec_hdu, weight_hdu, recon_hdu, latent_hdu])
+    hdul.writeto(out_path, overwrite=True)
 
 def prepare_spectra(coadd_path, qsos):
     """Prepare a single-coadd QSO spectrum file (B/R/Z) into SpenderQ inputs."""
@@ -469,25 +538,19 @@ def _load_raw_single_coadd(coadd_path):
 
 
 #==== incrementally process each coadd for restart-safe TACC runs =====
-LATENT_OUT_DIR = Path("/work/11161/kanyuni/ls6/quassiQ/latent")
+LATENT_OUT_DIR = Path("work2/11161/kanyuni/ls6/quassiQ/latent")
 LATENT_OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-LATENT_ALL_CSV = LATENT_OUT_DIR / "latent_all_targets.csv"
-LATENT_VAR_CSV = LATENT_OUT_DIR / "latent_variance_by_target.csv"
-LATENT_VAR_DIV_MEAN_CSV = LATENT_OUT_DIR / "latent_variance_div_mean_by_target.csv"
-LATENT_VAR_DIV_MEAN_HIGH_CSV = LATENT_OUT_DIR / "latent_variance_div_mean_high_values.csv"
-LATENT_HIST_DIR = LATENT_OUT_DIR / "plot"
-LATENT_HIST_DIR.mkdir(parents=True, exist_ok=True)
-TARGET_HIST_BINS = 20
-HIGH_RATIO_PERCENTILE = 95.0
-HIGH_RATIO_TOP_N = 10
+target_count = len(_collect_available_target_ids(coadd_files))
+LATENT_ALL_CSV = LATENT_OUT_DIR / f"latent_all_targets_{target_count}.csv"
 # Enable restart done-markers by default for resumable long runs.
-ENABLE_DONE_MARKERS = False
+ENABLE_DONE_MARKERS = True
 LATENT_ALL_COLUMNS = [
     "TARGETID",
     "COADD_TAG",
     "OBS_NIGHT",
     "SPECTRUM_INDEX",
+    "REDSHIFT",
     *[f"Latent{i+1}" for i in range(10)],
     "Variance",
 ]
@@ -532,274 +595,30 @@ def _append_latent_row(csv_path: Path, row: dict[str, object]) -> None:
         writer.writerow(row)
 
 
-def _latent_to_fixed_width(latent_vec: np.ndarray, width: int = 10) -> np.ndarray:
-    fixed = np.full(width, np.nan, dtype=np.float64)
-    n_copy = min(width, latent_vec.size)
-    fixed[:n_copy] = latent_vec[:n_copy]
-    return fixed
-
-
-def _nice_step(value: float) -> float:
-    """Return a human-friendly step size close to value using 1/2/5 * 10^n."""
-    if not np.isfinite(value) or value <= 0:
-        return 0.1
-
-    exponent = np.floor(np.log10(value))
-    base = value / (10 ** exponent)
-
-    if base <= 1:
-        nice_base = 1
-    elif base <= 2:
-        nice_base = 2
-    elif base <= 5:
-        nice_base = 5
-    else:
-        nice_base = 10
-
-    return float(nice_base * (10 ** exponent))
-
-
-def _adaptive_bin_width(vmin: float, vmax: float) -> float:
-    """Choose a bin width that follows data scale."""
-    data_range = vmax - vmin
-    if not np.isfinite(data_range) or data_range <= 0:
-        return 0.1
-
-    raw_step = data_range / TARGET_HIST_BINS
-    nice_step = _nice_step(raw_step)
-    return float(nice_step)
-
-
-def _write_empty_summary_csvs(
-    variance_csv: Path,
-    variance_div_mean_csv: Path,
-    variance_div_mean_high_csv: Path,
-) -> None:
-    # Overwrite summary files when no valid input rows exist, avoiding stale outputs.
-    pd.DataFrame(columns=["TARGETID"]).to_csv(variance_csv, index=False)
-    pd.DataFrame(columns=["TARGETID"]).to_csv(variance_div_mean_csv, index=False)
-    pd.DataFrame(
-        columns=[
-            "TARGETID",
-            "LATENT",
-            "RATIO_VALUE",
-            "THRESHOLD_VALUE",
-            "RANK_WITHIN_LATENT",
-        ]
-    ).to_csv(variance_div_mean_high_csv, index=False)
-
-
-def _update_variance_products_from_latent_table(
-    latent_csv: Path,
-    variance_csv: Path,
-    variance_div_mean_csv: Path,
-    variance_div_mean_high_csv: Path,
-    hist_dir: Path,
-    available_target_ids: Optional[set[int]] = None,
-) -> int:
-    """Recompute variance products, refresh histograms, and persist high ratio outliers."""
-    if not latent_csv.exists():
-        _write_empty_summary_csvs(variance_csv, variance_div_mean_csv, variance_div_mean_high_csv)
-        return 0
-
-    # Keep TARGETID exact (17-digit integers) and avoid float rounding.
-    df_all = pd.read_csv(latent_csv, dtype={"TARGETID": "string"})
-    if "TARGETID" not in df_all.columns:
-        _write_empty_summary_csvs(variance_csv, variance_div_mean_csv, variance_div_mean_high_csv)
-        return 0
-
-    df_all["TARGETID"] = pd.to_numeric(df_all["TARGETID"], errors="coerce")
-    df_all = df_all[df_all["TARGETID"].notna()].copy()
-    if len(df_all) == 0:
-        _write_empty_summary_csvs(variance_csv, variance_div_mean_csv, variance_div_mean_high_csv)
-        return 0
-    df_all["TARGETID"] = df_all["TARGETID"].astype(np.int64)
-
-    if available_target_ids is not None and len(available_target_ids) > 0:
-        before_count = len(df_all)
-        df_all = df_all[df_all["TARGETID"].isin(available_target_ids)].copy()
-        after_count = len(df_all)
-        if after_count < before_count:
-            print(
-                "Filtered latent table to TARGETIDs present in coadd_dir: "
-                f"{after_count}/{before_count} rows retained"
-            )
-
-    latent_cols_present = [f"Latent{i + 1}" for i in range(10) if f"Latent{i + 1}" in df_all.columns]
-    if len(df_all) == 0 or not latent_cols_present:
-        _write_empty_summary_csvs(variance_csv, variance_div_mean_csv, variance_div_mean_high_csv)
-        return 0
-
-    df_summary = (
-        df_all.groupby("TARGETID", as_index=False)[latent_cols_present]
-        .var(ddof=0)
-        .rename(columns={col: f"{col}_var" for col in latent_cols_present})
-    )
-    df_summary.to_csv(variance_csv, index=False)
-
-    df_means = (
-        df_all.groupby("TARGETID", as_index=False)[latent_cols_present]
-        .mean()
-        .rename(columns={col: f"{col}_mean" for col in latent_cols_present})
-    )
-
-    df_ratio = df_summary.merge(df_means, on="TARGETID", how="inner")
-    ratio_columns: list[str] = []
-    for latent_col in latent_cols_present:
-        var_col = f"{latent_col}_var"
-        mean_col = f"{latent_col}_mean"
-        ratio_col = f"{var_col}_over_mean_abs"
-        ratio_columns.append(ratio_col)
-
-        var_vals = np.abs(df_ratio[var_col].to_numpy(dtype=np.float64))
-        mean_vals = np.abs(df_ratio[mean_col].to_numpy(dtype=np.float64))
-        ratio_vals = np.divide(
-            var_vals,
-            mean_vals,
-            out=np.full_like(var_vals, np.nan, dtype=np.float64),
-            where=mean_vals != 0,
-        )
-        df_ratio[ratio_col] = ratio_vals
-
-    ratio_out_cols = ["TARGETID", *ratio_columns]
-    df_ratio[ratio_out_cols].to_csv(variance_div_mean_csv, index=False)
-
-    high_rows: list[dict[str, object]] = []
-    for ratio_col in ratio_columns:
-        if ratio_col not in df_ratio.columns:
-            continue
-
-        series_df = df_ratio[["TARGETID", ratio_col]].dropna()
-        if series_df.empty:
-            continue
-
-        values = series_df[ratio_col].to_numpy(dtype=np.float64)
-        threshold = float(np.nanpercentile(values, HIGH_RATIO_PERCENTILE))
-        top_df = (
-            series_df[series_df[ratio_col] >= threshold]
-            .sort_values(ratio_col, ascending=False)
-            .head(HIGH_RATIO_TOP_N)
-        )
-
-        latent_name = ratio_col.replace("_var_over_mean_abs", "")
-        # iterrows() can upcast mixed int/float rows to float64, which corrupts 17-digit TARGETIDs.
-        for rank, row in enumerate(top_df.itertuples(index=False), start=1):
-            target_id_value = int(getattr(row, "TARGETID"))
-            ratio_value = float(getattr(row, ratio_col))
-            high_rows.append(
-                {
-                    "TARGETID": target_id_value,
-                    "LATENT": latent_name,
-                    "RATIO_VALUE": ratio_value,
-                    "THRESHOLD_VALUE": threshold,
-                    "RANK_WITHIN_LATENT": rank,
-                }
-            )
-
-    source_target_ids = set(int(x) for x in df_all["TARGETID"].tolist())
-    high_target_ids: set[int] = set()
-    for row in high_rows:
-        raw_tid = cast(Any, row.get("TARGETID"))
-        high_target_ids.add(int(raw_tid))
-    unexpected_ids = sorted(high_target_ids - source_target_ids)
-    if unexpected_ids:
-        raise RuntimeError(
-            "Integrity error: high-value TARGETID(s) not present in latent_all source. "
-            f"latent_csv={latent_csv}, high_csv={variance_div_mean_high_csv}, "
-            f"unexpected_ids={unexpected_ids[:10]}"
-        )
-
-    high_df = pd.DataFrame(
-        high_rows,
-        columns=[
-            "TARGETID",
-            "LATENT",
-            "RATIO_VALUE",
-            "THRESHOLD_VALUE",
-            "RANK_WITHIN_LATENT",
-        ],
-    )
-    tmp_high_csv = variance_div_mean_high_csv.with_suffix(".tmp")
-    high_df.to_csv(tmp_high_csv, index=False)
-    tmp_high_csv.replace(variance_div_mean_high_csv)
-
-    created_histograms = 0
-    for ratio_col in ratio_columns:
-        if ratio_col not in df_ratio.columns:
-            continue
-
-        values = df_ratio[ratio_col].dropna().to_numpy(dtype=np.float64)
-        if values.size == 0:
-            continue
-
-        vmin = float(np.nanmin(values))
-        vmax = float(np.nanmax(values))
-        if np.isfinite(vmin) and np.isfinite(vmax) and vmax > vmin:
-            bin_width = _adaptive_bin_width(vmin, vmax)
-            start = np.floor(vmin / bin_width) * bin_width
-            # Keep a constant bin width within each histogram.
-            n_bins = int(np.ceil((vmax - start) / bin_width))
-            stop = start + max(1, n_bins) * bin_width
-            bin_edges = np.arange(start, stop + (0.5 * bin_width), bin_width, dtype=np.float64)
-
-            if bin_edges.size < 2:
-                bins_for_hist = "auto"
-            else:
-                bins_for_hist = bin_edges.tolist()
-        else:
-            bins_for_hist = "auto"
-
-        fig, ax = plt.subplots(figsize=(8, 5))
-        counts, _, _ = ax.hist(values, bins=bins_for_hist, color="tab:blue", alpha=0.85, edgecolor="black")
-        threshold_value = float(np.nanpercentile(values, HIGH_RATIO_PERCENTILE))
-        ax.axvline(
-            threshold_value,
-            color="tab:orange",
-            linestyle="--",
-            linewidth=1.5,
-            label=(
-                f"{HIGH_RATIO_PERCENTILE:.0f}th pct threshold = {threshold_value:.4g}"
-                f" (max = {vmax:.4g})"
-            ),
-        )
-        ax.set_title(f"Histogram of {ratio_col} across TARGETIDs")
-        ax.set_xlabel(ratio_col)
-        ax.set_ylabel("Count")
-        # Histogram counts are discrete; keep ticks on integer values and avoid scientific notation.
-        y_max = float(np.nanmax(counts)) if counts.size > 0 else 0.0
-        ax.set_ylim(bottom=0, top=(y_max * 1.1 + 1.0) if y_max > 0 else 1.0)
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=8, integer=True, min_n_ticks=3))
-        ax.ticklabel_format(axis="y", style="plain", useOffset=False)
-        ax.legend(loc="best", fontsize="small")
-        ax.grid(alpha=0.25)
-        fig.tight_layout()
-
-        hist_path = hist_dir / f"{ratio_col}_hist.png"
-        fig.savefig(hist_path, dpi=150)
-        plt.close(fig)
-        created_histograms += 1
-
-    return created_histograms
-
 
 existing_latent_keys = _load_existing_latent_keys(LATENT_ALL_CSV)
 print(f"Loaded {len(existing_latent_keys)} existing latent keys from {LATENT_ALL_CSV}")
 available_target_ids = _collect_available_target_ids(coadd_files)
 print(f"Detected {len(available_target_ids)} TARGETIDs in active coadd_dir")
-
-# Restrict summary tables/histograms to IDs in scope for this run.
-if requested_target_ids:
-    try:
-        summary_target_ids = {int(target_id) for target_id in requested_target_ids}
-    except ValueError:
-        summary_target_ids = available_target_ids
-    print(f"Using {len(summary_target_ids)} requested TARGETIDs for summary products")
-else:
-    summary_target_ids = available_target_ids
+coadd_keys_in_selection = {
+    (int(os.path.basename(os.path.dirname(path))), os.path.splitext(os.path.basename(path))[0])
+    for path in coadd_files
+}
+processed_target_ids_total = {target_id for target_id, _, _ in existing_latent_keys}
+processed_coadds_total = {(target_id, coadd_tag) for target_id, coadd_tag, _ in existing_latent_keys}
+completed_in_selection_before = len(processed_coadds_total & coadd_keys_in_selection)
+print(
+    f"Resume status before run: completed_coadds={completed_in_selection_before}/{len(coadd_keys_in_selection)}, "
+    f"completed_target_ids={len(processed_target_ids_total)}"
+)
 
 n_done_markers = 0
 n_appended_rows = 0
 n_reconstructed = 0
+n_valid_coadds = 0
+n_completed_coadds = 0
+reconstructed_target_ids: set[int] = set()
+cleaned_recon_keys: set[tuple[int, str]] = set()
 
 for coadd_path in coadd_files:
     print(f"\nProcessing: {coadd_path}")
@@ -815,7 +634,7 @@ for coadd_path in coadd_files:
     os.makedirs(recon_dir, exist_ok=True)
 
     done_marker = os.path.join(recon_dir, f"{coadd_tag}.done")
-    if ENABLE_DONE_MARKERS and os.path.exists(done_marker):
+    if ENABLE_DONE_MARKERS and os.path.exists(done_marker) and not args.force_overlay:
         print(f"Skip coadd (done marker exists): {done_marker}")
         n_done_markers += 1
         continue
@@ -830,6 +649,8 @@ for coadd_path in coadd_files:
         print(f"  problem: {e}")
         skipped_files.append((coadd_path, str(e)))
         continue
+
+    n_valid_coadds += 1
 
     if len(spec) == 0:
         print("No valid spectra after filtering. Skipping.")
@@ -856,21 +677,40 @@ for coadd_path in coadd_files:
         plt.close()
 
     coadd_success = False
+    updated_target_ids_in_coadd: set[int] = set()
     for i in range(len(target_id_t)):
         spec_i = spec[i:i + 1]
         w_i = w[i:i + 1]
         z_i = z[i:i + 1]
         tid = int(target_id_t[i])
         latent_key = (tid, coadd_tag, i)
-        recon_path = os.path.join(recon_dir, f"{coadd_tag}_target{tid}_idx{i}.png")
+        product_stem = _product_stem(coadd_tag, tid, i)
+        recon_path = os.path.join(recon_dir, f"{product_stem}.png")
+        recon_fits_path = os.path.join(recon_dir, f"{product_stem}_recon.fits")
+        already_processed = (
+            latent_key in existing_latent_keys
+            and os.path.exists(recon_path)
+            and os.path.exists(recon_fits_path)
+        )
 
-        if latent_key in existing_latent_keys and os.path.exists(recon_path):
-            print(f"Skip spectrum (already reconstructed and logged): TARGETID={tid}, coadd={coadd_tag}, idx={i}")
+        if already_processed and not args.force_overlay:
+            print(f"Skip spectrum (already logged): TARGETID={tid}, coadd={coadd_tag}, idx={i}")
             continue
+        if already_processed and args.force_overlay:
+            print(
+                "Force mode: recomputing existing spectrum "
+                f"TARGETID={tid}, coadd={coadd_tag}, idx={i}"
+            )
 
         if torch.isnan(spec_i).any() or torch.isnan(w_i).any() or torch.isnan(z_i).any():
             print(f"Skipping TARGETID {tid} ({coadd_tag}) due to NaNs")
             continue
+
+        cleanup_key = (tid, coadd_tag)
+        if cleanup_key not in cleaned_recon_keys:
+            _cleanup_stale_recon_products(Path(recon_dir), tid, coadd_tag)
+            cleaned_recon_keys.add(cleanup_key)
+        w_initial_i = w_i.detach().clone()
 
         try:
             s, recon = spender.eval(spec_i, w_i, z_i)
@@ -889,8 +729,26 @@ for coadd_path in coadd_files:
         z0 = float(z_i[0].cpu().numpy())
         wave_rest = (desiQSO._wave_obs / (1.0 + z0)).cpu().numpy()
         obs_spec = spec_i[0].cpu().numpy()
+        latent_vector = np.asarray(s.detach().cpu().numpy()).reshape(-1)
+        updated_weight = w_i[0].detach().cpu().numpy()
+        initial_weight = w_initial_i[0].detach().cpu().numpy()
 
-        # Save each reconstruction immediately so walltime interruptions keep prior outputs.
+        _save_recon_spectrum_fits(
+            out_path=Path(recon_fits_path),
+            target_id=tid,
+            coadd_tag=coadd_tag,
+            spectrum_index=i,
+            z_value=z0,
+            wave_obs=np.asarray(desiQSO._wave_obs, dtype=np.float64),
+            wave_rest=wave_rest,
+            observed_flux=obs_spec,
+            initial_weight=initial_weight,
+            updated_weight=updated_weight,
+            wave_recon=np.asarray(wave_recon, dtype=np.float64),
+            recon_flux=np.asarray(recon[0], dtype=np.float64),
+            latent_vector=latent_vector,
+        )
+
         fig, ax = plt.subplots(figsize=(12, 4))
         ax.plot(wave_rest, obs_spec, color="tab:blue", lw=0.7, alpha=0.9, label="Observed")
         ax.plot(wave_recon, recon[0], color="tab:red", lw=0.7, alpha=0.95, label="SpenderQ recon")
@@ -907,10 +765,12 @@ for coadd_path in coadd_files:
         target_store = recon_store.setdefault(tid, {"obs": [], "recon": []})
         target_store["obs"].append((wave_rest, obs_spec, obs_label))
         target_store["recon"].append((wave_recon, recon[0], obs_label))
+        updated_target_ids_in_coadd.add(tid)
 
-        latent_vector = np.asarray(s.detach().cpu().numpy()).reshape(-1)
-        latent_10 = _latent_to_fixed_width(latent_vector, width=10)
-        latent_variance = np.nanvar(latent_10[:9]) if latent_10.shape[0] >= 9 else np.nan
+        latent_10 = np.full(10, np.nan, dtype=np.float64)
+        n_copy = min(10, latent_vector.size)
+        latent_10[:n_copy] = latent_vector[:n_copy]
+        latent_variance = np.nanvar(latent_10[:9]) if latent_10.size >= 9 else np.nan
 
         if latent_key not in existing_latent_keys:
             latent_row: dict[str, object] = {
@@ -918,6 +778,7 @@ for coadd_path in coadd_files:
                 "COADD_TAG": coadd_tag,
                 "OBS_NIGHT": obs_night if obs_night is not None else "",
                 "SPECTRUM_INDEX": i,
+                "REDSHIFT": z0,
                 "Variance": float(latent_variance) if np.isfinite(latent_variance) else np.nan,
             }
             for j in range(10):
@@ -927,41 +788,41 @@ for coadd_path in coadd_files:
             _append_latent_row(LATENT_ALL_CSV, latent_row)
             existing_latent_keys.add(latent_key)
             n_appended_rows += 1
-            n_hist = _update_variance_products_from_latent_table(
-                LATENT_ALL_CSV,
-                LATENT_VAR_CSV,
-                LATENT_VAR_DIV_MEAN_CSV,
-                LATENT_VAR_DIV_MEAN_HIGH_CSV,
-                LATENT_HIST_DIR,
-                available_target_ids=summary_target_ids,
-            )
-            print(
-                f"Updated variance tables and {n_hist} histogram(s) after append: "
-                f"{LATENT_VAR_CSV}, {LATENT_VAR_DIV_MEAN_CSV}, "
-                f"{LATENT_VAR_DIV_MEAN_HIGH_CSV}, {LATENT_HIST_DIR}"
-            )
 
         n_reconstructed += 1
+        reconstructed_target_ids.add(tid)
+        processed_target_ids_total.add(tid)
+        processed_coadds_total.add((tid, coadd_tag))
         coadd_success = True
         print(f"Saved recon and latent row: TARGETID={tid}, coadd={coadd_tag}, idx={i}")
 
+    for target_id in sorted(updated_target_ids_in_coadd):
+        overlay_recon_dir = Path(coadd_dir) / str(target_id) / "recon"
+        _save_target_overlays(target_id, recon_store[target_id], overlay_recon_dir)
+        print(f"Saved incremental overlay plots for TARGETID={target_id} in {overlay_recon_dir}")
+
     if coadd_success and ENABLE_DONE_MARKERS:
         Path(done_marker).touch()
+        n_completed_coadds += 1
         print(f"Wrote done marker: {done_marker}")
     elif coadd_success:
+        n_completed_coadds += 1
         print("Done markers disabled; not writing .done file.")
     else:
         print("No successful spectra for this coadd; done marker not written.")
 
+print("\n==== FINAL SUMMARY ====")
 print(
     f"\nRun summary: reconstructed={n_reconstructed}, "
+    f"unique_target_ids={len(reconstructed_target_ids)}, "
+    f"valid_coadds={n_valid_coadds}, "
+    f"completed_coadds_this_run={n_completed_coadds}, "
     f"appended_rows={n_appended_rows}, skipped_done_markers={n_done_markers}"
 )
-
-for target_id, store in recon_store.items():
-    overlay_recon_dir = Path(coadd_dir) / str(target_id) / "recon"
-    _save_target_overlays(target_id, store, overlay_recon_dir)
-    print(f"Saved overlay plots for TARGETID={target_id} in {overlay_recon_dir}")
+print(
+    f"Resume status after run: completed_coadds={len(processed_coadds_total & coadd_keys_in_selection)}/{len(coadd_keys_in_selection)}, "
+    f"completed_target_ids={len(processed_target_ids_total)}"
+)
 
 if skipped_files:
     print("\n=== Skipped files summary ===")
@@ -974,23 +835,10 @@ if skipped_files:
         print(f"- {path}")
         print(f"  problem: {reason}")
 
-# Ensure summary products are present even if this run appends no new rows.
 if LATENT_ALL_CSV.exists():
-    n_hist = _update_variance_products_from_latent_table(
-        LATENT_ALL_CSV,
-        LATENT_VAR_CSV,
-        LATENT_VAR_DIV_MEAN_CSV,
-        LATENT_VAR_DIV_MEAN_HIGH_CSV,
-        LATENT_HIST_DIR,
-        available_target_ids=summary_target_ids,
-    )
-    print(
-        f"Final variance refresh complete: {LATENT_VAR_CSV}, {LATENT_VAR_DIV_MEAN_CSV}, "
-        f"{LATENT_VAR_DIV_MEAN_HIGH_CSV}; "
-        f"histograms available: {n_hist} in {LATENT_HIST_DIR}"
-    )
+    print(f"Latent table updated: {LATENT_ALL_CSV}")
 else:
-    print(f"No latent table found at {LATENT_ALL_CSV}; skipping summary products.")
+    print(f"No latent table found at {LATENT_ALL_CSV}.")
 
 
 def compute_target_latent_means(input_csv: Path, output_csv: Path) -> None:
