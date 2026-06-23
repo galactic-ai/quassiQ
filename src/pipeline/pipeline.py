@@ -26,8 +26,8 @@ latent_csv = "/work2/11161/kanyuni/ls6/quassiQ/latent/latent_all_targets_13927.c
 catalog_csv = "/work2/11161/kanyuni/ls6/quassiQ/catalog/CLQ_candidates.csv"
 latent_out_dir = "/work2/11161/kanyuni/ls6/quassiQ/latent"
 
-coadd_root = "/work2/11161/kanyuni/ls6/quassiQ/coadds"
-plot_root = "/work2/11161/kanyuni/ls6/quassiQ/plot/0421"
+coadd_root = "/work/10579/prisha/ls6/desi_project/output_coadds/"
+plot_root = "/work1/11161/kanyuni/ls6/quassiQ/plot/june"
 flux_ratio_pass_root = os.path.join(plot_root, "flux_ratio_pass")
 
 snr_cut = 2.0
