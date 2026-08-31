@@ -1,6 +1,7 @@
 import os
 import glob
 import math
+from datetime import datetime
 from functools import lru_cache
 
 import matplotlib.pyplot as plt
@@ -13,24 +14,25 @@ from astropy.io import fits
 # COMBINED PIPELINE (FINAL ORDER)
 # 0) Redshift filter first (Z > 2.4)
 # 1) S/N filter: keep coadds with median S/N >= snr_cut
-# 2) Drop targets with fewer than min_kept_coadds_per_target kept coadds
-# 3) Latent filter: keep targets with n_latents_exceed_p95 > 0
-# 4) Plot final intersection targets
+# 2) Quality cut: keep coadds with reduced chi2 <= chi2_cut
+# 3) Drop targets with fewer than min_kept_coadds_per_target kept coadds
+# 4) Latent filter: keep targets with n_latents_exceed_p95 > 0
+# 5) Plot final intersection targets
 # ============================================================
 
+latent_csv = "/work/11161/kanyuni/ls6/quassiQ/latent/latent_all_targets_13927.csv"
+catalog_csv = "/work/11161/kanyuni/ls6/quassiQ/catalog/CLQ_candidates.csv"
+base_latent_out_dir = "/work/11161/kanyuni/ls6/quassiQ/latent"
+base_plot_root = "/work/11161/kanyuni/ls6/quassiQ/plot/0421"
+run_output_tag = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+latent_out_dir = os.path.join(base_latent_out_dir, run_output_tag)
 
-# -------------------------
-# PATHS / CONFIG
-# -------------------------
-latent_csv = "/work2/11161/kanyuni/ls6/quassiQ/latent/latent_all_targets_13927.csv"
-catalog_csv = "/work2/11161/kanyuni/ls6/quassiQ/catalog/CLQ_candidates.csv"
-latent_out_dir = "/work2/11161/kanyuni/ls6/quassiQ/latent"
-
-coadd_root = "/work2/11161/kanyuni/ls6/quassiQ/coadds"
-plot_root = "/work2/11161/kanyuni/ls6/quassiQ/plot/0421"
+coadd_root = "/work/11161/kanyuni/ls6/quassiQ/coadds"
+plot_root = os.path.join(base_plot_root, run_output_tag)
 flux_ratio_pass_root = os.path.join(plot_root, "flux_ratio_pass")
 
 snr_cut = 2.0
+chi2_cut = 10.0
 min_kept_coadds_per_target = 2
 z_min = 2.4
 flux_ratio_cut = 0.5
@@ -235,6 +237,42 @@ def compute_median_snr_from_original_coadd(coadd_path, target_id):
         return np.nan, 0
 
 
+def compute_reduced_chi2_from_weight_hdu(recon_path, target_id):
+    if recon_path is None or not os.path.exists(recon_path):
+        return np.nan
+
+    try:
+        with fits.open(recon_path) as hdul:
+            if "OBSERVED" not in hdul or "RECON" not in hdul or "WEIGHT" not in hdul:
+                return np.nan
+
+            row_idx = get_target_row_idx(hdul, target_id)
+
+            obs = hdul["OBSERVED"].data
+            rec = hdul["RECON"].data
+            weight = hdul["WEIGHT"].data
+
+            wave_obs = row_select(obs["WAVE_REST"], row_idx).astype(np.float64)
+            flux_obs = row_select(obs["OBS_FLUX"], row_idx).astype(np.float64)
+            wave_rec = row_select(rec["WAVE_RECON"], row_idx).astype(np.float64)
+            flux_rec = row_select(rec["RECON_FLUX"], row_idx).astype(np.float64)
+            weights = row_select(weight["W_UPDATED"], row_idx).astype(np.float64)
+
+            good = np.isfinite(wave_obs) & np.isfinite(flux_obs) & np.isfinite(weights) & (weights > 0)
+            if not np.any(good):
+                return np.nan
+
+            recon_interp = np.interp(wave_obs, wave_rec, flux_rec, left=np.nan, right=np.nan)
+            valid = good & np.isfinite(recon_interp)
+            if not np.any(valid):
+                return np.nan
+
+            chi2_values = (flux_obs[valid] - recon_interp[valid]) ** 2 * weights[valid]
+            return float(np.sum(chi2_values) / valid.sum())
+    except Exception:
+        return np.nan
+
+
 def classify_target_by_snr(target_id):
     target_root = os.path.join(coadd_root, str(target_id))
     recon_dir = os.path.join(target_root, "recon")
@@ -269,7 +307,9 @@ def classify_target_by_snr(target_id):
 
     kept_files = []
     rejected_low_snr_count = 0
+    rejected_high_chi2_count = 0
     invalid_snr_count = 0
+    invalid_chi2_count = 0
     snr_table_rows = []
 
     for recon_path in recon_files:
@@ -278,14 +318,31 @@ def classify_target_by_snr(target_id):
 
         median_snr, n_snr_pix = compute_median_snr_from_original_coadd(coadd_path, target_id)
 
-        is_kept = np.isfinite(median_snr) and (median_snr >= snr_cut)
-        is_rejected_low = np.isfinite(median_snr) and (median_snr < snr_cut)
-        is_invalid = not np.isfinite(median_snr)
+        passes_snr = np.isfinite(median_snr) and (median_snr >= snr_cut)
+        rejected_low_snr = np.isfinite(median_snr) and (median_snr < snr_cut)
+        invalid_snr = not np.isfinite(median_snr)
+
+        chi2_weight = np.nan
+        passes_chi2_weight = False
+        rejected_high_chi2 = False
+        invalid_chi2 = False
+
+        if passes_snr:
+            chi2_weight = compute_reduced_chi2_from_weight_hdu(recon_path, target_id)
+            passes_chi2_weight = np.isfinite(chi2_weight) and (chi2_weight <= chi2_cut)
+            rejected_high_chi2 = np.isfinite(chi2_weight) and (chi2_weight > chi2_cut)
+            invalid_chi2 = not np.isfinite(chi2_weight)
+
+        is_kept = bool(passes_snr and passes_chi2_weight)
 
         if is_kept:
             kept_files.append((recon_path, median_snr))
-        elif is_rejected_low:
+        elif rejected_low_snr:
             rejected_low_snr_count += 1
+        elif rejected_high_chi2:
+            rejected_high_chi2_count += 1
+        elif invalid_chi2:
+            invalid_chi2_count += 1
         else:
             invalid_snr_count += 1
 
@@ -297,9 +354,14 @@ def classify_target_by_snr(target_id):
                 "FILE_COADD": os.path.basename(coadd_path) if coadd_path else "",
                 "MEDIAN_SNR": median_snr,
                 "SNR_NPIX": n_snr_pix,
+                "CHI2_WEIGHT": chi2_weight,
+                "PASSES_SNR_FLAG": bool(passes_snr),
+                "PASSES_CHI2_WEIGHT_FLAG": bool(passes_chi2_weight),
                 "KEPT_FLAG": bool(is_kept),
-                "REJECTED_LOW_SNR_FLAG": bool(is_rejected_low),
-                "INVALID_SNR_FLAG": bool(is_invalid),
+                "REJECTED_LOW_SNR_FLAG": bool(rejected_low_snr),
+                "REJECTED_HIGH_CHI2_FLAG": bool(rejected_high_chi2),
+                "INVALID_SNR_FLAG": bool(invalid_snr),
+                "INVALID_CHI2_FLAG": bool(invalid_chi2),
             }
         )
 
@@ -313,7 +375,9 @@ def classify_target_by_snr(target_id):
         "exists": True,
         "kept_files": kept_files,
         "rejected_low": rejected_low_snr_count,
+        "rejected_high_chi2": rejected_high_chi2_count,
         "invalid": invalid_snr_count,
+        "invalid_chi2": invalid_chi2_count,
         "total_recon": len(recon_files),
     }
 
@@ -638,6 +702,9 @@ def plot_target_from_kept_files(target_id, kept_files):
         if plot_data is None:
             continue
 
+        chi2_weight = compute_reduced_chi2_from_weight_hdu(path, target_id)
+        chi2_label = f"{chi2_weight:.3f}" if np.isfinite(chi2_weight) else "nan"
+
         wave_rec = plot_data["wave_rec"]
         flux_rec = plot_data["flux_rec"]
         wave_obs = plot_data["wave_obs"]
@@ -664,7 +731,7 @@ def plot_target_from_kept_files(target_id, kept_files):
                 alpha=0.60,
                 zorder=2,
                 linestyle="--",
-                label=f"{date_label} (obs coarse, kept S/N={median_snr:.2f})",
+                label=f"{date_label} (obs coarse, S/N={median_snr:.2f}, χ²w={chi2_label})",
             )
 
             obs_lohi = finite_minmax(wave_obs)
@@ -684,7 +751,7 @@ def plot_target_from_kept_files(target_id, kept_files):
             lw=2.4,
             alpha=0.50,
             zorder=3,
-            label=f"{date_label} (recon, kept S/N={median_snr:.2f})",
+            label=f"{date_label} (recon, S/N={median_snr:.2f}, χ²w={chi2_label})",
         )
 
         good_recon = np.isfinite(flux_rec_plot)
@@ -872,8 +939,9 @@ def main():
     print(f"Targets passing redshift filter: {len(redshift_eligible_ids)}")
 
     print("\n" + "=" * 70)
-    print("Stage 1: S/N screening")
+    print("Stage 1: S/N + quality screening")
     print(f"S/N cut: median S/N >= {snr_cut}")
+    print(f"Quality cut: reduced chi2 <= {chi2_cut}")
     print(f"Min kept coadds per target: {min_kept_coadds_per_target}")
     print("=" * 70)
 
@@ -884,8 +952,50 @@ def main():
     snr_ok_targets = set(snr_ok_map.keys())
 
     print(f"Targets scanned in S/N stage: {snr_stats['targets_scanned']}")
-    print(f"Targets passing S/N stage: {snr_stats['targets_with_min_kept']}")
-    print(f"Targets removed by S/N min-coadd rule: {snr_stats['targets_removed_lt_min_kept']}")
+    print(f"Targets passing S/N + quality stage: {snr_stats['targets_with_min_kept']}")
+    print(f"Targets removed by min-coadd rule: {snr_stats['targets_removed_lt_min_kept']}")
+
+
+    #stage 1.2 chi squared cut 
+
+    # Below is transferred ====================================================== need to be debugged
+
+    # summary = snr_ok_map[target_id]
+    kept_files = summary["kept_files"]
+
+    if len(kept_files) < min_kept_coadds_per_target:
+        continue
+
+    plot_result = plot_target_from_kept_files(target_id, kept_files)
+    passed_flux_ratio = plot_result["passed_flux_ratio"]
+    peak_summary_df = plot_result["peak_summary_df"]
+
+    if not peak_summary_df.empty:
+        peak_summary_frames.append(peak_summary_df)
+
+    flux_ratio_inventory_rows.append(
+        {
+            "TARGETID": str(target_id),
+            "KEPT_COADDS": len(kept_files),
+            "REJECTED_LOW_SNR": summary["rejected_low"],
+            "REJECTED_HIGH_CHI2": summary.get("rejected_high_chi2", 0),
+            "INVALID_SNR": summary["invalid"],
+            "INVALID_CHI2": summary.get("invalid_chi2", 0),
+            "TOTAL_RECON": summary["total_recon"],
+            "PASSED_FLUX_RATIO_CUT": bool(passed_flux_ratio),
+        }
+    )
+
+    if not passed_flux_ratio:
+        total_flux_ratio_discarded += 1
+        print(
+            f"Discarding {target_id}: kept={len(kept_files)}, "
+            f"low={summary['rejected_low']}, chi2={summary.get('rejected_high_chi2', 0)}, "
+            f"invalid={summary['invalid']}, total={summary['total_recon']}"
+        )
+        continue
+
+    # ====================================================================== 
 
     print("\n" + "=" * 70)
     print("Stage 2: Latent filter")
@@ -900,7 +1010,7 @@ def main():
 
     print("\n" + "=" * 70)
     print("Stage 3: Flux-ratio cut and plotting")
-    print(f"Targets after redshift + S/N + latent: {len(final_targets)}")
+    print(f"Targets after redshift + S/N + quality + latent: {len(final_targets)}")
     print(
         "Condition: any of "
         f"{', '.join(flux_ratio_lines)} has FLUX_DIFF_OVER_LOWEST > {flux_ratio_cut}"
@@ -916,38 +1026,44 @@ def main():
     peak_summary_frames = []
     flux_ratio_inventory_rows = []
 
-    for target_id in final_targets:
-        summary = snr_ok_map[target_id]
-        kept_files = summary["kept_files"]
 
-        if len(kept_files) < min_kept_coadds_per_target:
-            continue
 
-        plot_result = plot_target_from_kept_files(target_id, kept_files)
-        passed_flux_ratio = plot_result["passed_flux_ratio"]
-        peak_summary_df = plot_result["peak_summary_df"]
+    # This is problamatic bc this is supposed to be implemented at stage 1.
+    # for target_id in final_targets:
+    #     summary = snr_ok_map[target_id]
+    #     kept_files = summary["kept_files"]
 
-        if not peak_summary_df.empty:
-            peak_summary_frames.append(peak_summary_df)
+    #     if len(kept_files) < min_kept_coadds_per_target:
+    #         continue
 
-        flux_ratio_inventory_rows.append(
-            {
-                "TARGETID": str(target_id),
-                "KEPT_COADDS": len(kept_files),
-                "REJECTED_LOW_SNR": summary["rejected_low"],
-                "INVALID_SNR": summary["invalid"],
-                "TOTAL_RECON": summary["total_recon"],
-                "PASSED_FLUX_RATIO_CUT": bool(passed_flux_ratio),
-            }
-        )
+    #     plot_result = plot_target_from_kept_files(target_id, kept_files)
+    #     passed_flux_ratio = plot_result["passed_flux_ratio"]
+    #     peak_summary_df = plot_result["peak_summary_df"]
 
-        if not passed_flux_ratio:
-            total_flux_ratio_discarded += 1
-            print(
-                f"Discarding {target_id}: kept={len(kept_files)}, "
-                f"low={summary['rejected_low']}, invalid={summary['invalid']}, total={summary['total_recon']}"
-            )
-            continue
+    #     if not peak_summary_df.empty:
+    #         peak_summary_frames.append(peak_summary_df)
+
+    #     flux_ratio_inventory_rows.append(
+    #         {
+    #             "TARGETID": str(target_id),
+    #             "KEPT_COADDS": len(kept_files),
+    #             "REJECTED_LOW_SNR": summary["rejected_low"],
+    #             "REJECTED_HIGH_CHI2": summary.get("rejected_high_chi2", 0),
+    #             "INVALID_SNR": summary["invalid"],
+    #             "INVALID_CHI2": summary.get("invalid_chi2", 0),
+    #             "TOTAL_RECON": summary["total_recon"],
+    #             "PASSED_FLUX_RATIO_CUT": bool(passed_flux_ratio),
+    #         }
+    #     )
+
+    #     if not passed_flux_ratio:
+    #         total_flux_ratio_discarded += 1
+    #         print(
+    #             f"Discarding {target_id}: kept={len(kept_files)}, "
+    #             f"low={summary['rejected_low']}, chi2={summary.get('rejected_high_chi2', 0)}, "
+    #             f"invalid={summary['invalid']}, total={summary['total_recon']}"
+    #         )
+    #         continue
 
         total_flux_ratio_kept += 1
         total_plotted_targets += 1
@@ -957,7 +1073,8 @@ def main():
 
         print(
             f"Plotting {target_id}: kept={len(kept_files)}, "
-            f"low={summary['rejected_low']}, invalid={summary['invalid']}, total={summary['total_recon']}"
+            f"low={summary['rejected_low']}, chi2={summary.get('rejected_high_chi2', 0)}, "
+            f"invalid={summary['invalid']}, total={summary['total_recon']}"
         )
 
     if peak_summary_frames:
