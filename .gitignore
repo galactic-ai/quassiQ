@@ -1,0 +1,24 @@
+# SLURM job output/error logs
+job/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# OS cruft
+.DS_Store
+
+# Generated data / outputs (adjust to match your actual pipeline.py paths)
+#plot/
+#latent/
+*.csvß
