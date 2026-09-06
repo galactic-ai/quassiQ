@@ -21,4 +21,4 @@ env/
 # Generated data / outputs (adjust to match your actual pipeline.py paths)
 #plot/
 #latent/
-#*.csvß
+*.csvß
