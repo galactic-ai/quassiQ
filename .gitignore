@@ -22,3 +22,4 @@ env/
 #plot/
 #latent/
 *.csv
+/src/pipeline/clq_nsigma_results/
