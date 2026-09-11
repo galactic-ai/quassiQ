@@ -25,6 +25,11 @@ RECON_BASE = Path(
     "/work/10579/prisha/ls6/desi_project/reconstructed_spectra/"
 )
 
+#temporarily
+# RECON_BASE = Path(
+#     "/work/11161/kanyuni/ls6/quassiQ_project/test_reconstructed_spectra/"
+# )
+
 COADD_BASE = Path(
     "/work/10579/prisha/ls6/desi_project/output_coadds/"
 )
@@ -381,12 +386,40 @@ def select_high_low_epochs(epochs):
 
 def interpolate_to_grid(values, old_wave, new_wave):
     """
-    Interpolate values onto a reference wavelength grid.
+    Interpolate values onto a reference wavelength grid after removing
+    padded/invalid wavelengths and sorting the input grid.
     """
+    values = np.asarray(values, dtype=float)
+    old_wave = np.asarray(old_wave, dtype=float)
+    new_wave = np.asarray(new_wave, dtype=float)
+
+    valid = (
+        np.isfinite(old_wave)
+        & np.isfinite(values)
+        & (old_wave > 0)
+    )
+
+    if np.count_nonzero(valid) < 2:
+        return np.full(new_wave.shape, np.nan, dtype=float)
+
+    wave_valid = old_wave[valid]
+    values_valid = values[valid]
+    order = np.argsort(wave_valid)
+    wave_valid = wave_valid[order]
+    values_valid = values_valid[order]
+
+    # np.interp expects an increasing grid. Remove repeated padded or
+    # duplicated wavelengths after sorting.
+    wave_valid, unique_indices = np.unique(
+        wave_valid,
+        return_index=True,
+    )
+    values_valid = values_valid[unique_indices]
+
     return np.interp(
         new_wave,
-        old_wave,
-        values,
+        wave_valid,
+        values_valid,
         left=np.nan,
         right=np.nan,
     )
@@ -396,15 +429,19 @@ def calculate_n_sigma(high_epoch, low_epoch):
     """
     Calculate:
 
-                       f_high - f_low
+                      |f_high - f_low|
     N_sigma(lambda) = -----------------
-                      sqrt(sigma_high^2
-                           + sigma_low^2)
+                       sqrt(1/ivar_high
+                            + 1/ivar_low)
+
+    Interpolate inverse variance before converting it to uncertainty.
+    Interpolating sigma arrays containing NaNs can make an otherwise
+    valid N_sigma array entirely non-finite.
     """
     wave = high_epoch["rest_wave"]
 
     high_flux = high_epoch["recon_flux"]
-    high_sigma = high_epoch["sigma"]
+    high_weights = high_epoch["weights"]
 
     low_flux = interpolate_to_grid(
         low_epoch["recon_flux"],
@@ -412,14 +449,24 @@ def calculate_n_sigma(high_epoch, low_epoch):
         wave,
     )
 
-    low_sigma = interpolate_to_grid(
-        low_epoch["sigma"],
+    low_weights = interpolate_to_grid(
+        low_epoch["weights"],
         low_epoch["rest_wave"],
         wave,
     )
 
-    denominator = np.sqrt(
-        high_sigma**2 + low_sigma**2
+    denominator = np.full(wave.shape, np.nan, dtype=float)
+
+    valid_weights = (
+        np.isfinite(high_weights)
+        & np.isfinite(low_weights)
+        & (high_weights > 0)
+        & (low_weights > 0)
+    )
+
+    denominator[valid_weights] = np.sqrt(
+        1.0 / high_weights[valid_weights]
+        + 1.0 / low_weights[valid_weights]
     )
 
     n_sigma = np.full(wave.shape, np.nan, dtype=float)
@@ -431,7 +478,7 @@ def calculate_n_sigma(high_epoch, low_epoch):
         & (denominator > 0)
     )
 
-    n_sigma[valid] = (
+    n_sigma[valid] = np.abs(
         high_flux[valid] - low_flux[valid]
     ) / denominator[valid]
 
@@ -456,6 +503,7 @@ def calculate_lya_n_sigma(wave, n_sigma):
         return np.nan
 
     return np.interp(LYA_WAVE, wave_valid, n_sigma_valid)
+    
 def plot_candidate(
     target_id,
     high_epoch,
@@ -724,6 +772,100 @@ def clear_previous_results(output_dir):
     print(f"Cleared {removed} previous result file(s) from {output_dir}")
 
 
+def diagnose_failed_candidate(target_id):
+    """Return diagnostics when the standard analysis returns None."""
+    target_id = str(target_id)
+    target_dir = RECON_BASE / target_id
+    fits_paths = sorted(target_dir.glob("recon_*.fits"))
+    epochs = load_candidate_epochs(target_id)
+
+    result = {
+        "TARGETID": target_id,
+        "analysis_status": "failed",
+        "failure_reason": "",
+        "number_of_reconstruction_files": len(fits_paths),
+        "number_of_nights": len(epochs),
+        "high_date": None,
+        "low_date": None,
+        "high_flux_lya": np.nan,
+        "low_flux_lya": np.nan,
+        "lya_wavelength": LYA_WAVE,
+        "lya_n_sigma": np.nan,
+        "nearest_n_sigma_wavelength": np.nan,
+        "nearest_n_sigma": np.nan,
+        "is_clq": False,
+        "high_path": None,
+        "low_path": None,
+        "plot_path": None,
+    }
+
+    if not target_dir.is_dir():
+        result["failure_reason"] = (
+            f"Reconstruction directory does not exist or is not accessible: "
+            f"{target_dir}"
+        )
+        return result
+
+    if len(epochs) < 2:
+        dates = [epoch["date"] for epoch in epochs]
+        result["failure_reason"] = (
+            "N_sigma requires two distinct observing nights, but only "
+            f"{len(epochs)} usable night(s) were found. Dates: {dates}"
+        )
+        return result
+
+    high_epoch, low_epoch = select_high_low_epochs(epochs)
+
+    if high_epoch is None or low_epoch is None:
+        flux_details = []
+        for epoch in epochs:
+            flux_lya = flux_at_wavelength(epoch, LYA_WAVE)
+            flux_details.append(
+                f"{epoch['date']}={flux_lya}"
+            )
+
+        result["failure_reason"] = (
+            "Fewer than two epochs have finite reconstructed flux at "
+            f"{LYA_WAVE:.2f} Angstrom. Values: "
+            + ", ".join(flux_details)
+        )
+        return result
+
+    result.update({
+        "high_date": high_epoch["date"],
+        "low_date": low_epoch["date"],
+        "high_flux_lya": high_epoch["flux_lya"],
+        "low_flux_lya": low_epoch["flux_lya"],
+        "high_path": str(high_epoch["fits_path"]),
+        "low_path": str(low_epoch["fits_path"]),
+    })
+
+    wave, _, _, n_sigma = calculate_n_sigma(
+        high_epoch,
+        low_epoch,
+    )
+    lya_n_sigma = calculate_lya_n_sigma(wave, n_sigma)
+    result["lya_n_sigma"] = lya_n_sigma
+
+    finite = np.isfinite(wave) & np.isfinite(n_sigma)
+    if np.any(finite):
+        finite_indices = np.flatnonzero(finite)
+        nearest_index = finite_indices[
+            np.argmin(np.abs(wave[finite] - LYA_WAVE))
+        ]
+        result["nearest_n_sigma_wavelength"] = wave[nearest_index]
+        result["nearest_n_sigma"] = n_sigma[nearest_index]
+
+    result["failure_reason"] = (
+        f"N_sigma could not be evaluated exactly at {LYA_WAVE:.2f} "
+        "Angstrom because the interpolated value is not finite. This "
+        "usually indicates invalid/zero weights or insufficient common "
+        "wavelength coverage."
+    )
+
+    return result
+
+
 def run_one_target(target_id):
     """Analyze one target and always make a diagnostic plot."""
     target_id = str(target_id)
@@ -741,12 +883,7 @@ def run_one_target(target_id):
     )
 
     if result is None:
-        print(
-            f"TARGETID {target_id} could not be analyzed. "
-            "Check that it has at least two reconstruction nights, "
-            "valid weights, and wavelength coverage around Ly-alpha."
-        )
-        return None
+        result = diagnose_failed_candidate(target_id)
 
     result_table = pd.DataFrame([result])
     SINGLE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -754,7 +891,26 @@ def run_one_target(target_id):
     result_table.to_csv(output_csv, index=False)
 
     print(result_table.to_string(index=False))
-    print(f"Diagnostic plot: {result['plot_path']}")
+    print(
+        f"N_sigma(Ly-alpha, {LYA_WAVE:.2f} Angstrom) = "
+        f"{result['lya_n_sigma']}"
+    )
+
+    if result.get("analysis_status") == "failed":
+        print(f"Analysis status: failed")
+        print(f"Reason: {result['failure_reason']}")
+
+        nearest_n_sigma = result.get("nearest_n_sigma", np.nan)
+        if np.isfinite(nearest_n_sigma):
+            print(
+                "Nearest finite N_sigma = "
+                f"{nearest_n_sigma:.6f} at "
+                f"{result['nearest_n_sigma_wavelength']:.2f} Angstrom"
+            )
+
+    if result["plot_path"] is not None:
+        print(f"Diagnostic plot: {result['plot_path']}")
+
     print(f"Single-target result: {output_csv}")
 
     return result_table
