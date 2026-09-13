@@ -36,12 +36,12 @@ QUASSIQ_ROOT = THIS_FILE.parents[2]      # .../quassiQ_project/quassiQ
 PROJECT_ROOT = THIS_FILE.parents[3]      # .../quassiQ_project
 
 FITS_CATALOG = PROJECT_ROOT / "QSO_iron" / "iron" / "QSO_cat_iron_cumulative_v0.fits"
-COADD_ROOT = PROJECT_ROOT / "coadds"
+COADD_ROOT = "/work/10579/prisha/ls6/desi_project/output_coadds"
 PLOT_ROOT = PROJECT_ROOT / "quality_cut_diagnostics"  # per-target median-S/N CSVs
 OUTPUT_CSV = "CLQ_candidates.csv"
 
 Z_MIN, Z_MAX = 2.1, 3.5
-MIN_DURATION_DAYS = 30
+MIN_DURATION_DAYS = 7 #change to 7 from 30 days
 SNR_CUT = 2.0
 MIN_KEPT_COADDS = 2
 
@@ -217,7 +217,7 @@ def main():
 
     df.to_csv(OUTPUT_CSV, index=False)
 
-    target_output = "CLQ_candidate_TARGETIDs.csv"
+    target_output = "CLQ_candidate_TARGETIDs_7days.csv"
 
     unique_targets = (
         df[["TARGETID"]]
