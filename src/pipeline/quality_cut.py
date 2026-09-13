@@ -12,7 +12,7 @@ Assumes the following directory layout:
 
 Stages
 ------
-1. Quality flags       : ZWARN in {0, 4}, COADD_FIBERSTATUS == 0
+1. Quality flags       : ZWARN in 0, COADD_FIBERSTATUS == 0
 2. Redshift window      : Z_MIN <= Z <= Z_MAX
 3. Repeat observations  : keep TARGETIDs with >1 remaining observation
 4. Duration             : keep TARGETIDs spanning >= MIN_DURATION_DAYS
@@ -70,7 +70,7 @@ def load_catalog(fits_path):
 
 
 def apply_quality_flags(df):
-    df = df[df["ZWARN"].isin([0, 4])]
+    df = df[df["ZWARN"].isin([0])]
     df = df[df["COADD_FIBERSTATUS"] == 0]
     print(f"Rows after quality filtering: {len(df)}")
     return df
