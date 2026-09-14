@@ -77,10 +77,21 @@ def apply_quality_flags(df):
 
 
 def apply_redshift_window(df, z_min=Z_MIN, z_max=Z_MAX):
-    mask_z = (df["Z"] >= z_min) & (df["Z"] <= z_max)
-    valid_ids = df.loc[mask_z, "TARGETID"].unique()
-    df = df[df["TARGETID"].isin(valid_ids)]
-    print(f"Rows after redshift filtering ({z_min} <= Z <= {z_max}): {len(df)}")
+    row_in_range = df["Z"].between(z_min, z_max, inclusive="both")
+
+    # True only when every observation for that TARGETID is in range
+    all_obs_in_range = (
+        row_in_range
+        .groupby(df["TARGETID"])
+        .transform("all")
+    )
+
+    df = df.loc[all_obs_in_range].copy()
+
+    print(
+        f"Rows after requiring all observations to satisfy "
+        f"{z_min} <= Z <= {z_max}: {len(df)}"
+    )
     return df
 
 
