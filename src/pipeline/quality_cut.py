@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 """
-Quality cuts for the QSO catalog -> CLQ_candidates.csv
+Quality cuts for the QSO catalog -> CLQ_candidates_7days.csv
 
 Assumes the following directory layout:
 
@@ -38,7 +38,7 @@ PROJECT_ROOT = THIS_FILE.parents[3]      # .../quassiQ_project
 FITS_CATALOG = PROJECT_ROOT / "QSO_iron" / "iron" / "QSO_cat_iron_cumulative_v0.fits"
 COADD_ROOT = "/work/10579/prisha/ls6/desi_project/output_coadds"
 PLOT_ROOT = PROJECT_ROOT / "quality_cut_diagnostics"  # per-target median-S/N CSVs
-OUTPUT_CSV = "CLQ_candidates.csv"
+OUTPUT_CSV = "CLQ_candidates_7days.csv"
 
 Z_MIN, Z_MAX = 2.1, 3.5
 MIN_DURATION_DAYS = 7 #change to 7 from 30 days
@@ -103,7 +103,7 @@ def apply_repeat_observation_filter(df):
 
 def apply_duration_filter(df, min_days=MIN_DURATION_DAYS):
     df = df.copy()
-    df["LASTNIGHT"] = pd.to_datetime(df["LASTNIGHT"], format="%Y%m%d")
+    df["LASTNIGHT"] = pd.to_datetime(df["LASTNIGHT"].astype(str), format="%Y%m%d") # explicitly .astype(str)
 
     duration = df.groupby("TARGETID")["LASTNIGHT"].agg(["min", "max"])
     duration["duration_days"] = (duration["max"] - duration["min"]).dt.days
