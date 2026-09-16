@@ -31,12 +31,11 @@ def get_obs_date_label(filepath):
 
 
 def row_select(arr, row_idx):
-    """Select one target row while preserving already one-dimensional arrays."""
+    """Select one target's spectrum while preserving already one-dimensional arrays."""
     arr = np.asarray(arr)
     if arr.ndim == 1:
         return arr
-    return arr[row_idx]
-
+    return arr[:, row_idx]
 
 def get_target_row_idx(hdul, target_id):
     """Find a TARGETID in FIBERMAP, defaulting to row zero when unavailable."""
