@@ -21,4 +21,5 @@ env/
 # Generated data / outputs (adjust to match your actual pipeline.py paths)
 #plot/
 #latent/
-#*.csvß
+*.csv
+/src/pipeline/clq_nsigma_results/
