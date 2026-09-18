@@ -552,6 +552,7 @@ def calculate_n_sigma(high_epoch, low_epoch):
         wave,
     )
 
+    #interpolating might be wrong? Might be just select wavelength that had highest N_sigma in the window
     low_weights = interpolate_to_grid(
         low_epoch["updated_weights"],
         low_epoch["rest_wave"],
