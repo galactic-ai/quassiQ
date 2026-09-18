@@ -51,7 +51,7 @@ EMISSION_LINES = {
 
 SIGNIFICANCE_THRESHOLD = 3.0
 SNR_CUT = 2.0
-
+CHI2_MAX = 1.4
 
 def load_catalog():
     candidates = pd.read_csv(CSV_PATH, dtype={"TARGETID": str})
@@ -207,27 +207,73 @@ def get_epoch_snr(target_id, night):
     return median_snr
 
 
+def calculate_chi2_per_pixel(orig_flux, recon_flux, weights):
+    """Calculate weighted chi-squared per valid reconstruction pixel."""
+    orig_flux = np.asarray(orig_flux, dtype=float).squeeze()
+    recon_flux = np.asarray(recon_flux, dtype=float).squeeze()
+    weights = np.asarray(weights, dtype=float).squeeze()
+
+    valid = (
+        np.isfinite(orig_flux)
+        & np.isfinite(recon_flux)
+        & np.isfinite(weights)
+        & (weights > 0)
+    )
+
+    number_of_pixels = np.count_nonzero(valid)
+
+    if number_of_pixels == 0:
+        return np.nan, 0
+
+    chi2 = np.sum(
+        (orig_flux[valid] - recon_flux[valid]) ** 2
+        * weights[valid]
+    )
+
+    chi2_per_pixel = chi2 / number_of_pixels
+    return float(chi2_per_pixel), int(number_of_pixels)
+    
 def load_epoch(fits_path, target_id):
     with fits.open(fits_path) as hdul:
         data = hdul[1].data
-        rest_wave = np.asarray(data["REST_WAVE"], dtype=float).squeeze()
-        recon_flux = np.asarray(data["RECON_FLUX"], dtype=float).squeeze()
+
+        rest_wave = np.asarray(
+            data["REST_WAVE"], dtype=float
+        ).squeeze()
+
+        orig_flux = np.asarray(
+            data["ORIG_FLUX"], dtype=float
+        ).squeeze()
+
+        recon_flux = np.asarray(
+            data["RECON_FLUX"], dtype=float
+        ).squeeze()
+
         updated_weights = np.asarray(
             data["UPDATED_WEIGHTS"], dtype=float
         ).squeeze()
 
+    chi2_per_pixel, chi2_pixels = calculate_chi2_per_pixel(
+        orig_flux,
+        recon_flux,
+        updated_weights,
+    )
+
     date = extract_observation_date(fits_path)
     coadd_snr = get_epoch_snr(target_id, date)
+
     return {
         "target_id": str(target_id),
         "date": date,
         "fits_path": fits_path,
         "rest_wave": rest_wave,
+        "orig_flux": orig_flux,
         "recon_flux": recon_flux,
         "updated_weights": updated_weights,
         "coadd_snr": coadd_snr,
+        "chi2_per_pixel": chi2_per_pixel,
+        "chi2_pixels": chi2_pixels,
     }
-
 
 def load_candidate_epochs(target_id):
     target_dir = RECON_BASE / str(target_id)
@@ -260,14 +306,27 @@ def flux_at_wavelength(epoch, wavelength):
         return np.nan
     return np.interp(wavelength, wave, flux)
 
-
-def select_high_low_epochs(epochs, wavelength, snr_cut=SNR_CUT):
+def select_high_low_epochs(
+    epochs,
+    wavelength,
+    snr_cut=SNR_CUT,
+    chi2_max=CHI2_MAX,
+):
     ranked = []
+
     for epoch in epochs:
+        # First apply the S/N cut
         snr = epoch.get("coadd_snr", np.nan)
         if not np.isfinite(snr) or snr < snr_cut:
             continue
+
+        # Then apply the reconstruction chi-square cut
+        chi2 = epoch.get("chi2_per_pixel", np.nan)
+        if not np.isfinite(chi2) or chi2 > chi2_max:
+            continue
+
         selection_flux = flux_at_wavelength(epoch, wavelength)
+
         if np.isfinite(selection_flux):
             ranked.append((selection_flux, epoch))
 
@@ -275,10 +334,19 @@ def select_high_low_epochs(epochs, wavelength, snr_cut=SNR_CUT):
         return None, None
 
     ranked.sort(key=lambda item: item[0])
+
     low_flux, low_epoch = ranked[0]
     high_flux, high_epoch = ranked[-1]
-    low_epoch = dict(low_epoch, selection_flux=low_flux)
-    high_epoch = dict(high_epoch, selection_flux=high_flux)
+
+    low_epoch = dict(
+        low_epoch,
+        selection_flux=low_flux,
+    )
+    high_epoch = dict(
+        high_epoch,
+        selection_flux=high_flux,
+    )
+
     return high_epoch, low_epoch
 
 
@@ -483,6 +551,8 @@ def analyze_target(
         "high_path": None,
         "low_path": None,
         "plot_path": None,
+        "high_chi2_per_pixel": np.nan,
+        "low_chi2_per_pixel": np.nan,
     }
 
     if len(epochs) < 2:
@@ -494,11 +564,15 @@ def analyze_target(
         passing = sum(
             np.isfinite(epoch.get("coadd_snr", np.nan))
             and epoch["coadd_snr"] >= SNR_CUT
+            and np.isfinite(epoch.get("chi2_per_pixel", np.nan))
+            and epoch["chi2_per_pixel"] <= CHI2_MAX
             and np.isfinite(flux_at_wavelength(epoch, center))
             for epoch in epochs
         )
+
         result["failure_reason"] = (
-            f"Only {passing} epoch(s) pass S/N >= {SNR_CUT} and cover "
+            f"Only {passing} epoch(s) pass S/N >= {SNR_CUT}, "
+            f"chi2/pixel <= {CHI2_MAX}, and cover "
             f"{center:.2f} Angstrom; at least two are required."
         )
         return result
@@ -510,9 +584,11 @@ def analyze_target(
         "low_flux_at_line": low_epoch["selection_flux"],
         "high_coadd_snr": high_epoch["coadd_snr"],
         "low_coadd_snr": low_epoch["coadd_snr"],
+        "high_chi2_per_pixel": high_epoch["chi2_per_pixel"],
+        "low_chi2_per_pixel": low_epoch["chi2_per_pixel"],
         "high_path": str(high_epoch["fits_path"]),
         "low_path": str(low_epoch["fits_path"]),
-    })
+    })  
 
     calculation = calculate_n_sigma(high_epoch, low_epoch)
     peak_n_sigma, peak_wave = calculate_peak_n_sigma(
