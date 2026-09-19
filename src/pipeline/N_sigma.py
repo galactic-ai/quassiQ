@@ -1346,7 +1346,7 @@ def run_pipeline(
         output_csv = CSV_OUTPUT_DIR / (
             f"{args.line_name}_"
             f"{args.target_id}.csv"
-        )
+        ); 
     else:
         if args.first_n is not None:
             suffix = f"first_{args.first_n}"
