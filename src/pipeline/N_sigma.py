@@ -1,7 +1,4 @@
 """Measure multi-epoch spectral variability around a requested emission line.
-
-To support another line, add one entry to EMISSION_LINES. All lines use the
-same loading, quality filtering, N-sigma calculation, plotting, and batch code.
 """
 
 from pathlib import Path
@@ -1044,7 +1041,7 @@ def analyze_target(
     redshift_map,
     output_dir,
     make_plot,
-    plot_only_if_significant,
+    plot_only_if_significant=False,
 ):
     target_id = str(target_id)
     center = line_config["wavelength"]
@@ -1193,13 +1190,13 @@ def analyze_target(
             "success",
     })
 
-    if (
-        make_plot
-        and (
-            is_significant
-            or not plot_only_if_significant
-        )
-    ):
+    # Keep the legacy argument for callers; plot all successful measurements.
+    if make_plot:
+        plot_dir = output_dir
+        if not is_significant:
+            plot_dir = (
+                OUTPUT_BASE / "non_CLQ" / line_name / output_dir.name
+            )
         result["plot_path"] = str(
             plot_line_result(
                 target_id,
@@ -1211,7 +1208,7 @@ def analyze_target(
                 peak_n_sigma,
                 peak_wave,
                 redshift_map,
-                output_dir,
+                plot_dir,
             )
         )
 
@@ -1486,9 +1483,8 @@ def parse_arguments():
         "--plot-all",
         action="store_true",
         help=(
-            "In batch mode, plot every "
-            "successful target instead of "
-            "only >3 sigma."
+            "Compatibility option: all successful targets are now plotted "
+            "by default, with <=3 sigma plots in non_CLQ/<line>/<run_type>."
         ),
     )
 
