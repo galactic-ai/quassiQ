@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Sample each of seven Venn regions and plot full-spectrum comparisons.
-"""
+"""Sample each of seven Venn regions and plot full-spectrum comparisons."""
 import argparse
 import importlib.util
+import shutil
 from pathlib import Path
 
 import matplotlib
@@ -61,6 +61,46 @@ def plot_target(pipeline, target, high, low, redshift, reference, output, catego
     return calc
 
 
+def plot_raw_target(pipeline, target, high, low, redshift, reference,
+                    output, category, coarse=False):
+    """Plot raw coadds (optionally binned) and, for the full view, reconstructions."""
+    if redshift is None or not np.isfinite(redshift):
+        raise ValueError(f'No valid redshift for raw coadds of {target}')
+    fig, ax = plt.subplots(figsize=(17, 6))
+    try:
+        found = False
+        for epoch, label, color in ((high, 'High', 'tab:blue'),
+                                    (low, 'Low', 'tab:orange')):
+            wave, flux = pipeline.load_original_coadd(target, epoch['date'], redshift)
+            if not wave.size:
+                raise ValueError(f'No original coadd for {target} on {epoch["date"]}')
+            found = True
+            if coarse:
+                wave, flux = pipeline.coarse_bin(wave, flux)
+                ax.plot(wave, flux, color=color, lw=1.1,
+                        label=f'{label} binned coadd: {epoch["date"]}')
+            else:
+                ax.plot(wave, flux, color=color, lw=0.45, alpha=0.4,
+                        label=f'{label} coadd: {epoch["date"]}')
+                # N_sigma.py stores RECON_FLUX divided by NORM.
+                ax.plot(epoch['rest_wave'], epoch['recon_flux'] * epoch['normalization'],
+                        color=color, lw=1.4, label=f'{label} reconstruction: {epoch["date"]}')
+        if not found:
+            raise ValueError(f'No original coadds for {target}')
+        for config in pipeline.EMISSION_LINES.values():
+            center = config['wavelength']
+            ax.axvline(center, color='tab:green', ls=':', alpha=0.45, lw=0.8)
+        ax.set(title=f'TARGETID {target} | {category} | {reference} | '
+                     f'{"Binned raw coadds" if coarse else "Raw coadds and reconstructions"}',
+               xlabel='Rest-frame wavelength [Å]', ylabel='Flux (original units)')
+        ax.legend(loc='upper right', fontsize=8)
+        ax.grid(alpha=0.2)
+        fig.tight_layout()
+        fig.savefig(output, dpi=180, bbox_inches='tight')
+    finally:
+        plt.close(fig)
+
+
 
 def read_ids(path, latent=False):
     frame = pd.read_csv(path, dtype='string')
@@ -82,9 +122,12 @@ def main():
                         help='Full cluster-jumper list, not an exclusive subset.')
     parser.add_argument('--latent-csv',  type=Path, default = Path("/work/11161/kanyuni/ls6/quassiQ_project/pipeline_output/latent/latent_targets_with_nonzero_p95_counts.csv"),
                         help='Full latent list with n_latents_exceed_p95, or prefiltered outlier list. Not the exclusive CSV.')
-    parser.add_argument('--nsigma-script', type=Path, default=Path(
+       parser.add_argument('--nsigma-script', type=Path, default=Path(
         '/work/11161/kanyuni/ls6/quassiQ_project/quassiQ/src/pipeline/N_sigma.py'))
     parser.add_argument('--out-dir', type=Path, default=root / 'category_plots')
+    parser.add_argument('--final-subset-csv', type=Path, default=Path(
+        '/work/10579/prisha/ls6/desi_project/final_subset.csv'),
+        help='Only sample TARGETIDs present in this catalog.')
     parser.add_argument('--number', type=int, default=100)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--line-name', default='lya', help='Reference for choosing high/low epochs.')
@@ -106,6 +149,7 @@ def main():
         emission.update(frame.loc[good, 'TARGETID'].str.strip().replace('', pd.NA).dropna())
     cluster = read_ids(args.cluster_csv)
     latent = read_ids(args.latent_csv, latent=True)
+    final_subset = read_ids(args.final_subset_csv)
     regions = {
         'emission_only': emission - cluster - latent,
         'cluster_only': cluster - emission - latent,
@@ -115,6 +159,8 @@ def main():
         'cluster_latent_only': (cluster & latent) - emission,
         'all_three': emission & cluster & latent,
     }
+    # Restrict every Venn region before sampling so rejected IDs are replaced.
+    regions = {name: members & final_subset for name, members in regions.items()}
     redshifts = {}
     if pipeline.CSV_PATH.is_file():
         _, redshifts = pipeline.load_catalog()
@@ -135,6 +181,9 @@ def main():
     for category, members in regions.items():
         folder = args.out_dir / category
         plots = folder / 'full_spectrum'
+        # Clear plots from previous runs, including the old flat layout.
+        if plots.is_dir():
+            shutil.rmtree(plots)
         plots.mkdir(parents=True, exist_ok=True)
         selected = pd.Series(sorted(members), dtype='string').sample(
             n=min(args.number, len(members)), random_state=args.seed).tolist()
@@ -153,10 +202,21 @@ def main():
                 calc = pipeline.calculate_n_sigma(high, low)
                 if not np.any(np.isfinite(calc['n_sigma'])):
                     raise ValueError('No finite N_sigma pixels')
-                output = plots / f"{target}_{low['date']}_{high['date']}.png"
+                target_plots = plots / target
+                target_plots.mkdir(parents=True, exist_ok=True)
+                filename = f"{target}_{low['date']}_{high['date']}.png"
+                output = target_plots / filename
+                coarse_output = target_plots / f'coarse_{filename}'
+                raw_output = target_plots / f'unnormalized_{filename}'
                 plot_target(pipeline, target, high, low, redshifts.get(target),
                             reference['label'], output, category)
+                plot_raw_target(pipeline, target, high, low, redshifts.get(target),
+                                reference['label'], coarse_output, category, coarse=True)
+                plot_raw_target(pipeline, target, high, low, redshifts.get(target),
+                                reference['label'], raw_output, category)
                 result.update(status='success', plot_path=str(output),
+                              coarse_plot_path=str(coarse_output),
+                              unnormalized_plot_path=str(raw_output),
                               high_date=high['date'], low_date=low['date'])
                 for line, config in pipeline.EMISSION_LINES.items():
                     peak, _ = pipeline.calculate_peak_n_sigma(calc['wave'], calc['n_sigma'],
@@ -181,3 +241,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+ 
