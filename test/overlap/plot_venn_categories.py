@@ -122,7 +122,7 @@ def main():
                         help='Full cluster-jumper list, not an exclusive subset.')
     parser.add_argument('--latent-csv',  type=Path, default = Path("/work/11161/kanyuni/ls6/quassiQ_project/pipeline_output/latent/latent_targets_with_nonzero_p95_counts.csv"),
                         help='Full latent list with n_latents_exceed_p95, or prefiltered outlier list. Not the exclusive CSV.')
-       parser.add_argument('--nsigma-script', type=Path, default=Path(
+    parser.add_argument('--nsigma-script', type=Path, default=Path(
         '/work/11161/kanyuni/ls6/quassiQ_project/quassiQ/src/pipeline/N_sigma.py'))
     parser.add_argument('--out-dir', type=Path, default=root / 'category_plots')
     parser.add_argument('--final-subset-csv', type=Path, default=Path(
