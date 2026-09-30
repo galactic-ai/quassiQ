@@ -384,6 +384,8 @@ def main():
                     missing_dates = [d for d in pair if d not in by_date]
                     if missing_dates:
                         raise ValueError(f'Detected/contributing epochs unavailable after spectral loading: {missing_dates}')
+                    epoch_a = by_date[first].copy()
+                    epoch_b = by_date[second].copy()
                     epoch_a['epoch_label'] = epoch_labels[first]
                     epoch_b['epoch_label'] = epoch_labels[second]
 
