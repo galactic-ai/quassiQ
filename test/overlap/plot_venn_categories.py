@@ -29,7 +29,7 @@ def plot_target(pipeline, target, high, low, redshift, reference, output, catego
                              gridspec_kw={'height_ratios': [2, 1]})
     try:
         for epoch, key, label, color in [(high, 'high_flux', 'Epoch A', 'tab:blue'),
-                                         (low, 'low_flux', 'Epoch B', 'tab:orange')]:
+                                         (low, 'low_flux', 'Epoch B', 'tab:red')]:
             if redshift is not None and np.isfinite(redshift):
                 ow, of = pipeline.load_original_coadd(target, epoch['date'], redshift)
                 if ow.size:
@@ -76,7 +76,7 @@ def plot_raw_target(pipeline, target, high, low, redshift, reference,
     try:
         found = False
         for epoch, label, color in ((high, 'Epoch A', 'tab:blue'),
-                                    (low, 'Epoch B', 'tab:orange')):
+                                    (low, 'Epoch B', 'tab:red')):
             wave, flux = pipeline.load_original_coadd(target, epoch['date'], redshift)
             if not wave.size:
                 raise ValueError(f'No original coadd for {target} on {epoch["date"]}')
