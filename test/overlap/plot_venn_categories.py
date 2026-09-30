@@ -7,6 +7,7 @@ high/low display pair. Counts and pair flags are saved separately.
 import argparse
 import importlib.util
 import shutil
+from itertools import combinations
 import json
 import re
 from pathlib import Path
@@ -208,8 +209,7 @@ def main():
     spec = importlib.util.spec_from_file_location('nsigma_pipeline', args.nsigma_script)
     pipeline = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(pipeline)
-    if args.line_name not in pipeline.EMISSION_LINES:
-        parser.error(f'Choose from {list(pipeline.EMISSION_LINES)}')
+  
 
     emission = set()
     emission_evidence = {}
@@ -308,22 +308,27 @@ def main():
             except Exception as exc:
                 by_date = {}
                 load_error = f'{type(exc).__name__}: {exc}'
-            # Latent-only selection has no detected pair: retain the original reference view.
-            if not evidence and not load_error:
-                try:
-                    high, low = pipeline.select_high_low_epochs(
-                        list(by_date.values()), pipeline.EMISSION_LINES[args.line_name]['wavelength'])
-                    if high is None or low is None:
-                        load_error = 'Fewer than two epochs pass quality and reference-line coverage cuts'
-                    else:
-                        pair = pair_key(high['date'], low['date'])
-                        all_pairs = [pair]
-                        evidence['latent_reference'] = {pair: [args.line_name + ': display pair, not latent detection']}
-                except Exception as exc:
-                    load_error = f'{type(exc).__name__}: {exc}'
+
+            # Outside except: include all pairs for latent-selected targets.
+            if target in latent and not load_error:
+                evidence['latent'] = {
+                    pair: ['All epoch pairs; latent selection is target-level']
+                    for pair in combinations(sorted(by_date), 2)
+                }
+                if len(by_date) < 2:
+                    load_error = 'Fewer than two available epochs for latent comparison'
+
+            # Merge pairs across methods without duplicates.
+            all_pairs = sorted({
+                pair
+                for method_pairs in evidence.values()
+                for pair in method_pairs
+            })
+           
             target_plots = plots / target
             target_plots.mkdir(parents=True, exist_ok=True)
             target_records = []
+            
             for first, second in all_pairs:
                 pair = (first, second)
                 methods = [method for method, pairs in evidence.items() if pair in pairs]
@@ -382,7 +387,7 @@ def main():
             if not all_pairs:
                 record = dict(TARGETID=target, category=category, status='failed',
                               failure_reason=load_error or 'No usable epoch pair',
-                              epoch_a='', epoch_b='', methods='latent_reference')
+                              epoch_a='', epoch_b='', methods='latent')
                 results.append(record)
             successes = sum(r['status'] == 'success' for r in target_records)
             target_results.append(dict(TARGETID=target, category=category,
