@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-"""Sample each of seven Venn regions and plot full-spectrum comparisons."""
+"""Plot every recorded emission pair and cross-cluster pair in sampled Venn targets.
+
+Latent membership remains target-level. Latent-only targets use a reference-line
+high/low display pair. Counts and pair flags are saved separately.
+"""
 import argparse
 import importlib.util
 import shutil
+import json
+import re
 from pathlib import Path
 
 import matplotlib
@@ -22,8 +28,8 @@ def plot_target(pipeline, target, high, low, redshift, reference, output, catego
     fig, axes = plt.subplots(2, 1, figsize=(17, 8), sharex=True,
                              gridspec_kw={'height_ratios': [2, 1]})
     try:
-        for epoch, key, label, color in [(high, 'high_flux', 'High', 'tab:blue'),
-                                         (low, 'low_flux', 'Low', 'tab:orange')]:
+        for epoch, key, label, color in [(high, 'high_flux', 'Epoch A', 'tab:blue'),
+                                         (low, 'low_flux', 'Epoch B', 'tab:orange')]:
             if redshift is not None and np.isfinite(redshift):
                 ow, of = pipeline.load_original_coadd(target, epoch['date'], redshift)
                 if ow.size:
@@ -45,7 +51,7 @@ def plot_target(pipeline, target, high, low, redshift, reference, output, catego
                              transform=axes[0].get_xaxis_transform(), rotation=90,
                              va='top', ha='right', fontsize=8)
         axes[0].set_title(f'TARGETID {target} | {category} | '
-                          f'High/low epochs selected at {reference}')
+                          f'{reference}')
         axes[0].set_ylabel('Normalized flux')
         axes[1].set_ylabel('Nσ')
         axes[1].set_xlabel('Rest-frame wavelength [Å]')
@@ -69,8 +75,8 @@ def plot_raw_target(pipeline, target, high, low, redshift, reference,
     fig, ax = plt.subplots(figsize=(17, 6))
     try:
         found = False
-        for epoch, label, color in ((high, 'High', 'tab:blue'),
-                                    (low, 'Low', 'tab:orange')):
+        for epoch, label, color in ((high, 'Epoch A', 'tab:blue'),
+                                    (low, 'Epoch B', 'tab:orange')):
             wave, flux = pipeline.load_original_coadd(target, epoch['date'], redshift)
             if not wave.size:
                 raise ValueError(f'No original coadd for {target} on {epoch["date"]}')
@@ -114,6 +120,69 @@ def read_ids(path, latent=False):
     return set(ids.dropna())
 
 
+def date_key(value):
+    if pd.isna(value):
+        raise ValueError('Missing epoch date')
+    value = re.sub(r'\.0$', '', str(value).strip())
+    return pd.to_datetime(value).strftime('%Y%m%d')
+
+
+def pair_key(a, b):
+    a, b = date_key(a), date_key(b)
+    if a == b:
+        raise ValueError(f'Epoch pair has the same date twice: {a}')
+    return tuple(sorted((a, b)))
+
+
+def cluster_pairs(frame, date_column=None):
+    """All distinct-date pairs with different valid cluster assignments."""
+    date_column = date_column or next((c for c in
+        ('OBS_DATE', 'NIGHT_CLEAN', 'LASTNIGHT') if c in frame), None)
+    if not date_column or 'CLUSTER' not in frame:
+        raise ValueError('Cluster CSV needs CLUSTER and an epoch date column')
+    result = {}
+    frame = frame.copy()
+    frame['TARGETID'] = frame.TARGETID.str.strip()
+    for target, rows in frame.groupby('TARGETID'):
+        assignments = {}
+        for _, row in rows.iterrows():
+            cluster = row.CLUSTER
+            if pd.isna(cluster) or str(cluster).strip() in ('', '-1', '-1.0'):
+                continue  # Missing/noise is not a cluster transition.
+            cluster = str(cluster).strip()
+            if re.fullmatch(r'-?\d+\.0+', cluster):
+                cluster = cluster.split('.')[0]
+            date = date_key(row[date_column])
+            if date in assignments and assignments[date] != cluster:
+                raise ValueError(f'{target}: conflicting clusters on {date}; date alone is ambiguous')
+            assignments[date] = cluster
+        pairs = {}
+        ordered = sorted(assignments)
+        for i, a in enumerate(ordered):
+            for j in range(i + 1, len(ordered)):
+                b = ordered[j]
+                if assignments[a] != assignments[b]:
+                    pairs[(a, b)] = [f'clusters={assignments[a]}->{assignments[b]};'
+                                     f'adjacent_valid_epochs={j == i + 1}']
+        if pairs:
+            result[target] = pairs
+    return result
+
+
+def emission_pair_columns(frame, high_col=None, low_col=None):
+    if high_col or low_col:
+        if not high_col or not low_col or high_col not in frame or low_col not in frame:
+            raise ValueError('Provide existing --emission-high-column and --emission-low-column')
+        return high_col, low_col
+    for high, low in [('high_date', 'low_date'), ('high_epoch', 'low_epoch'),
+                      ('high_epoch_date', 'low_epoch_date'), ('date_high', 'date_low')]:
+        if high in frame and low in frame:
+            return high, low
+    raise ValueError('Emission CSV lacks recognized pair dates. Supply '
+                     '--emission-high-column and --emission-low-column; '
+                     'target IDs alone cannot identify detected epochs.')
+
+
 def main():
     root = Path('/work/11161/kanyuni/ls6/quassiQ_project/pipeline_output')
     parser = argparse.ArgumentParser(description=__doc__)
@@ -130,7 +199,9 @@ def main():
         help='Only sample TARGETIDs present in this catalog.')
     parser.add_argument('--number', type=int, default=100)
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--line-name', default='lya', help='Reference for choosing high/low epochs.')
+    parser.add_argument('--cluster-date-column', default=None)
+    parser.add_argument('--emission-high-column', default=None)
+    parser.add_argument('--emission-low-column', default=None)
     args = parser.parse_args()
     if args.number < 1:
         parser.error('--number must be positive')
@@ -141,13 +212,25 @@ def main():
         parser.error(f'Choose from {list(pipeline.EMISSION_LINES)}')
 
     emission = set()
+    emission_evidence = {}
     # Use exactly the configured emission lines to avoid unrelated/stale CSVs.
     for line in pipeline.EMISSION_LINES:
         path = args.csv_dir / f'{line}_all_results.csv'
         frame = pd.read_csv(path, dtype={'TARGETID': 'string'})
+        frame['TARGETID'] = frame['TARGETID'].str.strip().replace('', pd.NA)
+        if frame['TARGETID'].isna().any():
+            raise ValueError(f'{path}: missing TARGETID')
         good = pd.to_numeric(frame['peak_n_sigma'], errors='coerce') > 3
         emission.update(frame.loc[good, 'TARGETID'].str.strip().replace('', pd.NA).dropna())
-    cluster = read_ids(args.cluster_csv)
+        if good.any():
+            hc, lc = emission_pair_columns(frame, args.emission_high_column, args.emission_low_column)
+            for _, row in frame.loc[good].iterrows():
+                target = str(row.TARGETID).strip()
+                pair = pair_key(row[hc], row[lc])
+                emission_evidence.setdefault(target, {}).setdefault(pair, []).append(line)
+    cluster_evidence = cluster_pairs(pd.read_csv(args.cluster_csv, dtype='string'),
+                                     args.cluster_date_column)
+    cluster = set(cluster_evidence)
     latent = read_ids(args.latent_csv, latent=True)
     final_subset = read_ids(args.final_subset_csv)
     regions = {
@@ -161,6 +244,18 @@ def main():
     }
     # Restrict every Venn region before sampling so rejected IDs are replaced.
     regions = {name: members & final_subset for name, members in regions.items()}
+    # Save every category's IDs together, before sampling.
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    all_categories = pd.DataFrame(
+        [(target, category)
+        for category, members in regions.items()
+        for target in sorted(members)],
+        columns=['TARGETID', 'category'],
+    )
+
+    all_categories.to_csv(
+        args.out_dir / 'all_categories_targetids.csv', index=False
+    )
     redshifts = {}
     if pipeline.CSV_PATH.is_file():
         _, redshifts = pipeline.load_catalog()
@@ -177,7 +272,6 @@ def main():
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     summary = []
-    reference = pipeline.EMISSION_LINES[args.line_name]
     for category, members in regions.items():
         folder = args.out_dir / category
         plots = folder / 'full_spectrum'
@@ -191,49 +285,129 @@ def main():
         pd.DataFrame({'TARGETID': selected}).to_csv(folder / 'selected_targetids.csv', index=False)
         print(f'\n{category}: {len(members)} total; {len(selected)} sampled', flush=True)
         results = []
+        target_results = []
         for i, target in enumerate(selected, 1):
-            result = {'TARGETID': target, 'category': category, 'reference_line': args.line_name,
-                      'status': 'failed', 'failure_reason': '', 'plot_path': None}
+            evidence = {}
+            if target in emission:
+                evidence['emission'] = emission_evidence[target]
+            if target in cluster:
+                evidence['cluster'] = cluster_evidence[target]
+            pair_sets = [set(pairs) for pairs in evidence.values()]
+            differs = len(pair_sets) > 1 and any(x != pair_sets[0] for x in pair_sets[1:])
+            common_pair = bool(set.intersection(*pair_sets)) if len(pair_sets) > 1 else False
+            # This also preserves pair provenance for unavailable spectra.
+            all_pairs = sorted(set.union(*pair_sets)) if pair_sets else []
+            load_error = ''
             try:
-                epochs = pipeline.load_candidate_epochs(target)
-                high, low = pipeline.select_high_low_epochs(epochs, reference['wavelength'])
-                if high is None:
-                    raise ValueError('Fewer than two epochs pass quality and reference-line coverage cuts')
-                calc = pipeline.calculate_n_sigma(high, low)
-                if not np.any(np.isfinite(calc['n_sigma'])):
-                    raise ValueError('No finite N_sigma pixels')
-                target_plots = plots / target
-                target_plots.mkdir(parents=True, exist_ok=True)
-                filename = f"{target}_{low['date']}_{high['date']}.png"
-                output = target_plots / filename
-                coarse_output = target_plots / f'coarse_{filename}'
-                raw_output = target_plots / f'unnormalized_{filename}'
-                plot_target(pipeline, target, high, low, redshifts.get(target),
-                            reference['label'], output, category)
-                plot_raw_target(pipeline, target, high, low, redshifts.get(target),
-                                reference['label'], coarse_output, category, coarse=True)
-                plot_raw_target(pipeline, target, high, low, redshifts.get(target),
-                                reference['label'], raw_output, category)
-                result.update(status='success', plot_path=str(output),
-                              coarse_plot_path=str(coarse_output),
-                              unnormalized_plot_path=str(raw_output),
-                              high_date=high['date'], low_date=low['date'])
-                for line, config in pipeline.EMISSION_LINES.items():
-                    peak, _ = pipeline.calculate_peak_n_sigma(calc['wave'], calc['n_sigma'],
-                                                              config['wavelength'], config['window'])
-                    result[f'{line}_pair_peak_n_sigma'] = peak
+                by_date = {}
+                for epoch in pipeline.load_candidate_epochs(target):
+                    date = date_key(epoch['date'])
+                    if date in by_date:
+                        raise ValueError(f'Multiple loaded spectra on {date}; cannot select unambiguously')
+                    by_date[date] = epoch
             except Exception as exc:
-                result['failure_reason'] = f'{type(exc).__name__}: {exc}'
-            results.append(result)
-            print(f"[{category} {i}/{len(selected)}] {target}: {result['status']} "
-                  f"{result['failure_reason']}", flush=True)
-        table = pd.DataFrame(results) if results else pd.DataFrame(
-            columns=['TARGETID', 'category', 'status', 'failure_reason', 'plot_path'])
-        table.to_csv(folder / 'full_spectrum_results.csv', index=False)
-        successful = sum(row['status'] == 'success' for row in results)
-        summary.append({'category': category, 'total_targets': len(members),
-                        'sampled_targets': len(selected), 'plots_saved': successful,
-                        'failed_targets': len(selected) - successful})
+                by_date = {}
+                load_error = f'{type(exc).__name__}: {exc}'
+            # Latent-only selection has no detected pair: retain the original reference view.
+            if not evidence and not load_error:
+                try:
+                    high, low = pipeline.select_high_low_epochs(
+                        list(by_date.values()), pipeline.EMISSION_LINES[args.line_name]['wavelength'])
+                    if high is None or low is None:
+                        load_error = 'Fewer than two epochs pass quality and reference-line coverage cuts'
+                    else:
+                        pair = pair_key(high['date'], low['date'])
+                        all_pairs = [pair]
+                        evidence['latent_reference'] = {pair: [args.line_name + ': display pair, not latent detection']}
+                except Exception as exc:
+                    load_error = f'{type(exc).__name__}: {exc}'
+            target_plots = plots / target
+            target_plots.mkdir(parents=True, exist_ok=True)
+            target_records = []
+            for first, second in all_pairs:
+                pair = (first, second)
+                methods = [method for method, pairs in evidence.items() if pair in pairs]
+                details = {method: evidence[method][pair] for method in methods}
+                method_tag = '+'.join(methods)
+                filename_methods = '+'.join(
+                    'emission_' + '-'.join(sorted(set(details[m]))) if m == 'emission' else m
+                    for m in methods)
+                flag = '__different_method_pairs' if differs else ''
+                stem = f'{target}__{first}__{second}__{filename_methods}{flag}'
+                result = dict(TARGETID=target, category=category, epoch_a=first, epoch_b=second,
+                              methods=method_tag, evidence_json=json.dumps(details),
+                              latent_target_selected=target in latent,
+                              method_pair_sets_differ=differs, has_pair_common_to_all_methods=common_pair,
+                              latent_selection_scope='target_variance_not_epoch_selection'
+                              if target in latent else '', status='failed', failure_reason='',
+                              normalized_plot_path='', coarse_plot_path='', unnormalized_plot_path='')
+                try:
+                    if load_error:
+                        raise ValueError(load_error)
+                    missing_dates = [d for d in pair if d not in by_date]
+                    if missing_dates:
+                        raise ValueError(f'Detected/contributing epochs unavailable after spectral loading: {missing_dates}')
+                    epoch_a, epoch_b = by_date[first], by_date[second]
+                    calc = pipeline.calculate_n_sigma(epoch_a, epoch_b)
+                    if not np.any(np.isfinite(calc['n_sigma'])):
+                        raise ValueError('No finite N_sigma pixels')
+                    description = f'{first} vs {second} | {filename_methods}'
+                    if target in latent:
+                        description += ' | latent: target-level selection'
+                    if differs:
+                        description += ' | DIFFERENT METHOD PAIRS'
+                    for kind in ('normalized', 'coarse', 'unnormalized'):
+                        output = target_plots / f'{kind}__{stem}.png'
+                        try:
+                            if kind == 'normalized':
+                                plot_target(pipeline, target, epoch_a, epoch_b, redshifts.get(target),
+                                            description, output, category)
+                            else:
+                                plot_raw_target(pipeline, target, epoch_a, epoch_b, redshifts.get(target),
+                                                description, output, category, coarse=kind == 'coarse')
+                            result[f'{kind}_plot_path'] = str(output)
+                        except Exception as exc:
+                            result['failure_reason'] += f'{kind}: {type(exc).__name__}: {exc}; '
+                    saved = sum(bool(result[f'{kind}_plot_path']) for kind in
+                                ('normalized', 'coarse', 'unnormalized'))
+                    result['status'] = 'success' if saved == 3 else 'partial' if saved else 'failed'
+                    for line, config in pipeline.EMISSION_LINES.items():
+                        peak, _ = pipeline.calculate_peak_n_sigma(calc['wave'], calc['n_sigma'],
+                                                                  config['wavelength'], config['window'])
+                        result[f'{line}_pair_peak_n_sigma'] = peak
+                except Exception as exc:
+                    result['failure_reason'] = f'{type(exc).__name__}: {exc}'
+                results.append(result)
+                target_records.append(result)
+            if not all_pairs:
+                record = dict(TARGETID=target, category=category, status='failed',
+                              failure_reason=load_error or 'No usable epoch pair',
+                              epoch_a='', epoch_b='', methods='latent_reference')
+                results.append(record)
+            successes = sum(r['status'] == 'success' for r in target_records)
+            target_results.append(dict(TARGETID=target, category=category,
+                                       method_pair_sets_differ=differs,
+                                       has_pair_common_to_all_methods=common_pair,
+                                       requested_pairs=len(all_pairs), successful_pairs=successes,
+                                       incomplete_pairs=len(all_pairs) - successes,
+                                       failure_reason=load_error,
+                                       status='success' if all_pairs and successes == len(all_pairs) else 'incomplete'))
+            # Checkpoint after each target.
+            pd.DataFrame(results).to_csv(folder / 'full_spectrum_results.csv', index=False)
+            pd.DataFrame(target_results).to_csv(folder / 'target_pair_summary.csv', index=False)
+            print(f'[{category} {i}/{len(selected)}] {target}: '
+                  f'{successes}/{len(all_pairs)} pairs fully plotted; different_method_pairs={differs}', flush=True)
+        if not results:
+            pd.DataFrame(columns=['TARGETID', 'epoch_a', 'epoch_b', 'methods', 'status',
+                                  'failure_reason']).to_csv(folder / 'full_spectrum_results.csv', index=False)
+            pd.DataFrame(columns=['TARGETID', 'requested_pairs', 'successful_pairs']).to_csv(
+                folder / 'target_pair_summary.csv', index=False)
+        summary.append(dict(category=category, total_targets=len(members), sampled_targets=len(selected),
+                            requested_pairs=sum(r['requested_pairs'] for r in target_results),
+                            successful_pairs=sum(r['status'] == 'success' for r in results),
+                            incomplete_pairs=sum(r['incomplete_pairs'] for r in target_results),
+                            incomplete_targets=sum(r['status'] != 'success' for r in target_results),
+                            targets_with_different_method_pairs=sum(r['method_pair_sets_differ'] for r in target_results)))
         pd.DataFrame(summary).to_csv(args.out_dir / 'category_summary.csv', index=False)
     print(pd.DataFrame(summary).to_string(index=False))
     print(f'Outputs: {args.out_dir}')
@@ -241,6 +415,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
- 
