@@ -1,5 +1,16 @@
 ## About 
 Find Changing-look AGNs using [SpenderQ](https://github.com/galactic-ai/SpenderQ/tree/main)
 
-- "pipeline" contains scripts to run SpenderQ and identify CLQ
-- "tacc" the same script as the ones in "pipeline" but for running the scripts on TACC
+```
+.
+├── src
+|   ├── pipeline <- pipeline to identify CLQ
+|   ├── quality_cut <- filter out targets 
+|   └── running_spenderq <- generate coadds and run SpenderQ
+├── test
+|   ├── overlap <- how many overlapped targets we have
+|   ├── N_sigma <- check the distribution; pipeline
+|   ├── latent <- produce plots for specific targets etc 
+|   └── file <- inspect file
+└── README.md
+```
