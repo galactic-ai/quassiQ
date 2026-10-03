@@ -45,7 +45,7 @@ def rebin_spectrum_raw(wave, flux, factor):
 def rebin_variance_raw(var, factor):
     n = len(var)
     n_keep = n - (n % factor)
-var_binned = np.sum(var[:n_keep].reshape(-1, factor), axis=1) / (factor**2)
+    var_binned = np.sum(var[:n_keep].reshape(-1, factor), axis=1) / (factor**2)
     return var_binned
 
 def process_target(tid, args, df_cat, df_cluster):
@@ -254,12 +254,24 @@ def process_target(tid, args, df_cat, df_cluster):
             axes[1, 2].set_ylabel("Coarse Nσ", fontsize=11)
             axes[1, 2].set_title(f"Coarse Rebinned Normalized N_sigma Between [{chr(65)}] & [{chr(66)}] (z={z:.4f})", fontsize=11, fontweight='bold')
 
+            # Dynamic Zoom-in for Coarse N_sigma
+            valid_n_sigma_coarse = n_sigma_coarse[~np.isnan(n_sigma_coarse)]
+            if len(valid_n_sigma_coarse) > 0:
+                p1_c, p99_c = np.percentile(valid_n_sigma_coarse, [1.0, 99.0])
+                axes[1, 2].set_ylim(min(-3.5, p1_c - 0.5), max(3.5, p99_c + 0.5))
+                
             # Original Normalized N_sigma (Row 4)
             diff_orig = nd_A['orig_masked_norm'] - nd_B['orig_masked_norm']
             n_sigma_orig = np.zeros_like(diff_orig)
             n_sigma_orig[valid] = diff_orig[valid] / err[valid]
             n_sigma_orig[~valid] = np.nan
 
+            # Dynamic Zoom-in for Orig N_sigma
+            valid_n_sigma_orig = n_sigma_orig[~np.isnan(n_sigma_orig)]
+            if len(valid_n_sigma_orig) > 0:
+                p1_o, p99_o = np.percentile(valid_n_sigma_orig, [1.0, 99.0])
+                axes[3, 2].set_ylim(min(-3.5, p1_o - 0.5), max(3.5, p99_o + 0.5))
+                
             axes[3, 2].plot(nd_A['wave_obs'], n_sigma_orig, color='tab:blue', lw=1.0)
             axes[3, 2].axhline(3, color='tab:red', ls='--', lw=1.5, label="3σ")
             axes[3, 2].axhline(-3, color='tab:red', ls='--', lw=1.5)
