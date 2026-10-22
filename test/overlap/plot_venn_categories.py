@@ -7,6 +7,7 @@ high/low display pair. Counts and pair flags are saved separately.
 import argparse
 import importlib.util
 import shutil
+from itertools import combinations
 import json
 import re
 from pathlib import Path
@@ -28,8 +29,14 @@ def plot_target(pipeline, target, high, low, redshift, reference, output, catego
     fig, axes = plt.subplots(2, 1, figsize=(17, 8), sharex=True,
                              gridspec_kw={'height_ratios': [2, 1]})
     try:
-        for epoch, key, label, color in [(high, 'high_flux', 'Epoch A', 'tab:blue'),
-                                         (low, 'low_flux', 'Epoch B', 'tab:red')]:
+        for epoch, key, label, color in [
+            (high, 'high_flux', 'Epoch A', 'tab:blue'),
+            (low, 'low_flux', 'Epoch B', 'tab:orange')
+        ]:
+            label = f"Epoch {epoch['epoch_label']}"
+            if 'cluster_label' in epoch:
+                label += f" [cluster {epoch['cluster_label']}]"
+
             if redshift is not None and np.isfinite(redshift):
                 ow, of = pipeline.load_original_coadd(target, epoch['date'], redshift)
                 if ow.size:
@@ -40,7 +47,7 @@ def plot_target(pipeline, target, high, low, redshift, reference, output, catego
                          label=f"{label}: {epoch['date']} (S/N={epoch['coadd_snr']:.2f}, "
                                f"χ²/pixel={epoch['chi2_per_pixel']:.2f})")
         axes[1].plot(wave, calc['n_sigma'], color='black', lw=0.8)
-        axes[1].axhline(pipeline.SIGNIFICANCE_THRESHOLD, color='tab:red', ls='--',
+        axes[1].axhline(pipeline.SIGNIFICANCE_THRESHOLD, color='tab:orange', ls='--',
                         label=f"{pipeline.SIGNIFICANCE_THRESHOLD:g}σ")
         for j, config in enumerate(pipeline.EMISSION_LINES.values()):
             center = config['wavelength']
@@ -75,8 +82,13 @@ def plot_raw_target(pipeline, target, high, low, redshift, reference,
     fig, ax = plt.subplots(figsize=(17, 6))
     try:
         found = False
-        for epoch, label, color in ((high, 'Epoch A', 'tab:blue'),
-                                    (low, 'Epoch B', 'tab:red')):
+        for epoch, label, color in (
+            (high, 'Epoch A', 'tab:blue'),
+            (low, 'Epoch B', 'tab:orange')
+        ):
+            label = f"Epoch {epoch['epoch_label']}"
+            if 'cluster_label' in epoch:
+                label += f" [cluster {epoch['cluster_label']}]"
             wave, flux = pipeline.load_original_coadd(target, epoch['date'], redshift)
             if not wave.size:
                 raise ValueError(f'No original coadd for {target} on {epoch["date"]}')
@@ -181,7 +193,13 @@ def emission_pair_columns(frame, high_col=None, low_col=None):
     raise ValueError('Emission CSV lacks recognized pair dates. Supply '
                      '--emission-high-column and --emission-low-column; '
                      'target IDs alone cannot identify detected epochs.')
-
+def epoch_letter(index):
+    label = ''
+    index += 1
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        label = chr(65 + remainder) + label
+    return label
 
 def main():
     root = Path('/work/11161/kanyuni/ls6/quassiQ_project/pipeline_output')
@@ -208,8 +226,7 @@ def main():
     spec = importlib.util.spec_from_file_location('nsigma_pipeline', args.nsigma_script)
     pipeline = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(pipeline)
-    if args.line_name not in pipeline.EMISSION_LINES:
-        parser.error(f'Choose from {list(pipeline.EMISSION_LINES)}')
+  
 
     emission = set()
     emission_evidence = {}
@@ -230,6 +247,17 @@ def main():
                 emission_evidence.setdefault(target, {}).setdefault(pair, []).append(line)
     cluster_evidence = cluster_pairs(pd.read_csv(args.cluster_csv, dtype='string'),
                                      args.cluster_date_column)
+    cluster_frame = pd.read_csv(args.cluster_csv, dtype='string')
+    date_column = args.cluster_date_column or next(
+        c for c in ('OBS_DATE', 'NIGHT_CLEAN', 'LASTNIGHT')
+        if c in cluster_frame
+    )
+    cluster_labels = {
+        (str(row['TARGETID']).strip(), date_key(row[date_column])):
+            str(row['CLUSTER']).strip()
+        for _, row in cluster_frame.iterrows()
+        if pd.notna(row['CLUSTER'])
+    }
     cluster = set(cluster_evidence)
     latent = read_ids(args.latent_csv, latent=True)
     final_subset = read_ids(args.final_subset_csv)
@@ -308,22 +336,31 @@ def main():
             except Exception as exc:
                 by_date = {}
                 load_error = f'{type(exc).__name__}: {exc}'
-            # Latent-only selection has no detected pair: retain the original reference view.
-            if not evidence and not load_error:
-                try:
-                    high, low = pipeline.select_high_low_epochs(
-                        list(by_date.values()), pipeline.EMISSION_LINES[args.line_name]['wavelength'])
-                    if high is None or low is None:
-                        load_error = 'Fewer than two epochs pass quality and reference-line coverage cuts'
-                    else:
-                        pair = pair_key(high['date'], low['date'])
-                        all_pairs = [pair]
-                        evidence['latent_reference'] = {pair: [args.line_name + ': display pair, not latent detection']}
-                except Exception as exc:
-                    load_error = f'{type(exc).__name__}: {exc}'
+
+            # Outside except: include all pairs for latent-selected targets.
+            if target in latent and not load_error:
+                evidence['latent'] = {
+                    pair: ['All epoch pairs; latent selection is target-level']
+                    for pair in combinations(sorted(by_date), 2)
+                }
+                if len(by_date) < 2:
+                    load_error = 'Fewer than two available epochs for latent comparison'
+
+            # Merge pairs across methods without duplicates.
+            all_pairs = sorted({
+                pair
+                for method_pairs in evidence.values()
+                for pair in method_pairs
+            })
+           
             target_plots = plots / target
+            epoch_labels = {
+                date: epoch_letter(i)
+                for i, date in enumerate(sorted(by_date))
+            }
             target_plots.mkdir(parents=True, exist_ok=True)
             target_records = []
+
             for first, second in all_pairs:
                 pair = (first, second)
                 methods = [method for method, pairs in evidence.items() if pair in pairs]
@@ -347,11 +384,25 @@ def main():
                     missing_dates = [d for d in pair if d not in by_date]
                     if missing_dates:
                         raise ValueError(f'Detected/contributing epochs unavailable after spectral loading: {missing_dates}')
-                    epoch_a, epoch_b = by_date[first], by_date[second]
+                    epoch_a = by_date[first].copy()
+                    epoch_b = by_date[second].copy()
+                    epoch_a['epoch_label'] = epoch_labels[first]
+                    epoch_b['epoch_label'] = epoch_labels[second]
+
+                    if target in cluster:
+                        epoch_a['cluster_label'] = cluster_labels.get(
+                            (target, first), 'unknown'
+                        )
+                        epoch_b['cluster_label'] = cluster_labels.get(
+                            (target, second), 'unknown'
+                        )
                     calc = pipeline.calculate_n_sigma(epoch_a, epoch_b)
                     if not np.any(np.isfinite(calc['n_sigma'])):
                         raise ValueError('No finite N_sigma pixels')
-                    description = f'{first} vs {second} | {filename_methods}'
+                    description = (
+                        f"Epoch {epoch_labels[first]} ({first}) vs "
+                        f"Epoch {epoch_labels[second]} ({second}) | {filename_methods}"
+                    )
                     if target in latent:
                         description += ' | latent: target-level selection'
                     if differs:
@@ -382,7 +433,7 @@ def main():
             if not all_pairs:
                 record = dict(TARGETID=target, category=category, status='failed',
                               failure_reason=load_error or 'No usable epoch pair',
-                              epoch_a='', epoch_b='', methods='latent_reference')
+                              epoch_a='', epoch_b='', methods='latent')
                 results.append(record)
             successes = sum(r['status'] == 'success' for r in target_records)
             target_results.append(dict(TARGETID=target, category=category,
@@ -395,8 +446,16 @@ def main():
             # Checkpoint after each target.
             pd.DataFrame(results).to_csv(folder / 'full_spectrum_results.csv', index=False)
             pd.DataFrame(target_results).to_csv(folder / 'target_pair_summary.csv', index=False)
-            print(f'[{category} {i}/{len(selected)}] {target}: '
-                  f'{successes}/{len(all_pairs)} pairs fully plotted; different_method_pairs={differs}', flush=True)
+            flag_text = (
+                f'; different_method_pairs={differs}'
+                if target in emission and target in cluster
+                else ''
+            )
+            print(
+                f'[{category} {i}/{len(selected)}] {target}: '
+                f'{successes}/{len(all_pairs)} pairs fully plotted{flag_text}',
+                flush=True,
+            )
         if not results:
             pd.DataFrame(columns=['TARGETID', 'epoch_a', 'epoch_b', 'methods', 'status',
                                   'failure_reason']).to_csv(folder / 'full_spectrum_results.csv', index=False)
