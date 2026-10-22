@@ -10,7 +10,8 @@ Find Changing-look AGNs using [SpenderQ](https://github.com/galactic-ai/SpenderQ
 ├── test
 |   ├── overlap <- how many overlapped targets we have
 |   ├── N_sigma <- check the distribution; pipeline
-|   ├── latent <- produce plots for specific targets etc 
+|   ├── latent <- produce plots for specific targets etc
+|   ├── post_process <- study correlations to implement additional cuts
 |   └── file <- inspect file
 └── README.md
 ```
