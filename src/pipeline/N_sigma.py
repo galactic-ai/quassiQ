@@ -33,7 +33,8 @@ CSV_OUTPUT_DIR = OUTPUT_BASE / "csv"
 EMISSION_LINES = EMISSION_LINES = {
     "lya": {
         "label": "Ly-alpha",
-        "wavelength": 1215.67,
+        "wavelength": 1215.24,
+        #SDSS spectra table 
         "window": 20.0,
         "display_half_width": 112.5,
 
@@ -52,7 +53,7 @@ EMISSION_LINES = EMISSION_LINES = {
 
     "mgii": {
         "label": "Mg II",
-        "wavelength": 2798.75,
+        "wavelength": 2799.117,
         "window": 45.0,
         "display_half_width": 40.0,
 
