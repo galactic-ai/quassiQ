@@ -30,60 +30,32 @@ OUTPUT_BASE = Path(
 
 CSV_OUTPUT_DIR = OUTPUT_BASE / "csv"
 
-EMISSION_LINES = {
+EMISSION_LINES = EMISSION_LINES = {
     "lya": {
         "label": "Ly-alpha",
         "wavelength": 1215.67,
-        "window": 2.0,
+        "window": 20.0,
         "display_half_width": 112.5,
+
     },
-    "nv": {
-        "label": "N V",
-        "wavelength": 1240.81,
-        "window": 2.0,
-        "display_half_width": 40.0,
-    },
-    "siiv_oiv": {
-        "label": "Si IV + O IV]",
-        "wavelength": 1399.80,
-        "window": 2.0,
-        "display_half_width": 40.0,
-    },
+
+   
     "civ": {
         "label": "C IV",
         "wavelength": 1549.48,
-        "window": 2.0,
+        "window": 25.0,
         "display_half_width": 40.0,
+
+       
     },
-    "heii": {
-        "label": "He II",
-        "wavelength": 1640.42,
-        "window": 2.0,
-        "display_half_width": 40.0,
-    },
-    "oiii": {
-        "label": "O III]",
-        "wavelength": 1663.48,
-        "window": 2.0,
-        "display_half_width": 40.0,
-    },
-    "aliii": {
-        "label": "Al III",
-        "wavelength": 1857.40,
-        "window": 2.0,
-        "display_half_width": 40.0,
-    },
-    "ciii": {
-        "label": "C III]",
-        "wavelength": 1908.73,
-        "window": 2.0,
-        "display_half_width": 50.0,
-    },
+
+
     "mgii": {
         "label": "Mg II",
         "wavelength": 2798.75,
-        "window": 2.0,
+        "window": 45.0,
         "display_half_width": 40.0,
+
     },
 }
 
