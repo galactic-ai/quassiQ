@@ -4,8 +4,8 @@
 For each TARGETID row on each category sheet in CLQ_visual.xlsx, this script:
   1. Loads the target's reconstructed epochs with the N_sigma pipeline.
   2. Computes N_sigma for every pair of epochs.
-  3. Counts finite pixels with N_sigma > 3 over the full overlapping spectrum.
-  4. Marks a target as passing if at least one pair has more than 3 such pixels.
+  3. Counts finite pixels with N_sigma > 3 within selected emission-line windows.
+  4. Evaluates minimum significant-pixel counts of 4, 3, and 2.
   5. Joins the target to its Average score from CLQ_visual.xlsx and assigns a level.
 
 The imported pipeline's calculate_n_sigma() controls the weights and N_sigma
@@ -41,13 +41,23 @@ DEFAULT_OUTPUT = Path(
     "pipeline_output/post_processing/pixel"
 )
 
-PIXEL_THRESHOLD = 3  # Pass requires strictly MORE than this many pixels.
+C_KMS = 299792.458
+LINE_HALF_WIDTH_KMS = 5000.0
+
+EMISSION_LINES = {
+    "lya":  {"label": "Ly-alpha", "wavelength": 1215.67},
+    "civ":  {"label": "C IV",     "wavelength": 1549.48},
+    "mgii": {"label": "Mg II",    "wavelength": 2798.75},
+}
+
 NSIGMA_THRESHOLD = 3.0
+THRESHOLDS = (4, 3, 2)
 LEVELS = [
     ("[1, 2.5)", 1.0, 2.5, False),
     ("[2.5, 3.5)", 2.5, 3.5, False),
     ("[3.5, 5]", 3.5, 5.0, True),
 ]
+LEVEL_LABELS = [level[0] for level in LEVELS]
 
 
 def normalize_target_id(value) -> str | None:
@@ -147,6 +157,8 @@ def read_workbook_targets(path: Path, requested_categories=None) -> list[dict]:
         )
     # Duplicate rounded IDs within one sheet collapse to one target row; average
     # their visible scores, preserving a blank score if all rows are blank.
+    if not rows:
+        raise ValueError("The selected worksheets contain no usable TARGETIDs.")
     records = pd.DataFrame(rows)
     records = (records.groupby(["category", "workbook_targetid"], as_index=False)
                .agg(Average=("Average", "mean"), workbook_rows=("Average", "size")))
@@ -161,12 +173,32 @@ def score_level(score: float) -> str:
             return label
     return "outside ranges"
 
+def emission_window_mask(wave):
+    wave = np.asarray(wave, dtype=float)
+    selected = np.zeros(wave.shape, dtype=bool)
+
+    for line in EMISSION_LINES.values():
+        center = line["wavelength"]
+        half_width = center * LINE_HALF_WIDTH_KMS / C_KMS
+
+        selected |= (
+            (wave >= center - half_width)
+            & (wave <= center + half_width)
+        )
+
+    return selected
+
 
 def count_significant_pixels(calculation: dict) -> tuple[int, int]:
-    """Return (number above threshold, number of finite N_sigma pixels)."""
     values = np.asarray(calculation["n_sigma"], dtype=float)
-    finite = np.isfinite(values)
-    return int(np.count_nonzero(finite & (values > NSIGMA_THRESHOLD))), int(finite.sum())
+
+    selected = emission_window_mask(calculation["wave"])
+    finite = np.isfinite(values) & selected
+
+    return (
+        int(np.count_nonzero(finite & (values > NSIGMA_THRESHOLD))),
+        int(finite.sum()),
+    )
 
 
 def analyze_target(pipeline, target_id: str, category: str) -> tuple[dict, list[dict]]:
@@ -178,7 +210,7 @@ def analyze_target(pipeline, target_id: str, category: str) -> tuple[dict, list[
         calculation = pipeline.calculate_n_sigma(first, second)
         pixels_over, finite_pixels = count_significant_pixels(calculation)
         n_sigma = np.asarray(calculation["n_sigma"], dtype=float)
-        finite = np.isfinite(n_sigma)
+        finite = (np.isfinite(n_sigma)& emission_window_mask(calculation["wave"]))
         if np.any(finite):
             peak_index = np.flatnonzero(finite)[np.argmax(n_sigma[finite])]
             pair_peak = float(n_sigma[peak_index])
@@ -192,8 +224,7 @@ def analyze_target(pipeline, target_id: str, category: str) -> tuple[dict, list[
             "second_date": second.get("date", ""),
             "pixels_nsigma_gt_3": pixels_over,
             "finite_pixels_compared": finite_pixels,
-            "pair_passes": pixels_over > PIXEL_THRESHOLD,
-            "max_nsigma_in_pair": float(np.nanmax(n_sigma)) if np.any(finite) else np.nan,
+            "max_nsigma_in_pair":(float(np.max(n_sigma[finite])) if np.any(finite) else np.nan),
         })
 
     max_pixels = max(
@@ -208,7 +239,6 @@ def analyze_target(pipeline, target_id: str, category: str) -> tuple[dict, list[
         "max_pixels_nsigma_gt_3": max_pixels,
         "max_nsigma_all_pairs": max_nsigma,
         "wavelength_at_max_nsigma": max_nsigma_wave,
-        "passes_new_threshold": max_pixels > PIXEL_THRESHOLD,
         "best_pair_first_date": "",
         "best_pair_second_date": "",
     }
@@ -219,102 +249,39 @@ def analyze_target(pipeline, target_id: str, category: str) -> tuple[dict, list[
     return target_result, pair_results
 
 
-def make_summary(target_results: pd.DataFrame) -> pd.DataFrame:
-    levels = [label for label, *_ in LEVELS]
-    if target_results.empty:
-        return pd.DataFrame(columns=[
-            "average_level", "passes_new_threshold", "target_count"
-        ])
+def make_summary(target_results: pd.DataFrame, min_pixels: int) -> pd.DataFrame:
+    frame = target_results.copy()
+
+    frame["max_pixels_nsigma_gt_3"] = pd.to_numeric(
+        frame["max_pixels_nsigma_gt_3"], errors="coerce"
+    ).fillna(0)
+
+    # Recalculate pass/fail for this particular pixel requirement.
+    frame["passes_new_threshold"] = (
+        frame["max_pixels_nsigma_gt_3"] >= min_pixels
+    )
+
     summary = (
-        target_results.groupby(["average_level", "passes_new_threshold"])
+        frame[frame["average_level"].isin(LEVEL_LABELS)]
+        .groupby(["average_level", "passes_new_threshold"])
         .size()
         .rename("target_count")
         .reset_index()
     )
-    # Include empty pass/fail combinations so the plot uses a stable layout.
-    full_index = pd.MultiIndex.from_product(
-        [levels, [False, True]],
+
+    # Include all three levels, each with a fail and a pass row.
+    full = pd.MultiIndex.from_product(
+        [LEVEL_LABELS, [False, True]],
         names=["average_level", "passes_new_threshold"],
     )
-    summary = (summary.set_index(["average_level", "passes_new_threshold"])
-               .reindex(full_index, fill_value=0).reset_index())
-    return summary
+
+    return (
+        summary.set_index(["average_level", "passes_new_threshold"])
+        .reindex(full, fill_value=0)
+        .reset_index()
+    )
 
 
-def make_plot(summary: pd.DataFrame, path: Path, category: str | None = None) -> None:
-    """Make a two-ring chart: score levels inside, pass/fail outside."""
-    level_labels = [label for label, *_ in LEVELS]
-    pivot = summary.pivot(
-        index="average_level", columns="passes_new_threshold", values="target_count"
-    ).reindex(level_labels, fill_value=0)
-    for column in (False, True):
-        if column not in pivot:
-            pivot[column] = 0
-    pivot = pivot.reindex(columns=[False, True], fill_value=0)
-    level_colors = ["#f28e8e", "#ffbf78", "#79dd83"]
-    outer_colors = []
-    outer_counts = []
-    outer_labels = []
-    inner_counts = []
-    inner_colors = []
-    for label, base_color in zip(level_labels, level_colors):
-        fail_count = int(pivot.loc[label, False])
-        pass_count = int(pivot.loc[label, True])
-        inner_counts.append(fail_count + pass_count)
-        inner_colors.append(base_color)
-        # Keep the fail/pass wedges adjacent so their combined arc matches the
-        # score-level wedge directly inside it.
-        outer_counts.extend([fail_count, pass_count])
-        outer_colors.extend([base_color + "88", base_color])
-        outer_labels.extend([
-            f"{label} — Fail (≤3 pixels)",
-            f"{label} — Pass (>3 pixels)",
-        ])
-
-    fig, ax = plt.subplots(figsize=(10, 7))
-    total = sum(inner_counts)
-    if total:
-        wedges_outer, _, _ = ax.pie(
-            outer_counts,
-            radius=1.0,
-            colors=outer_colors,
-            startangle=90,
-            counterclock=False,
-            wedgeprops={"width": 0.30, "edgecolor": "white", "linewidth": 1.2},
-            autopct=lambda pct: f"{int(round(pct * total / 100))}" if pct >= 4 else "",
-            pctdistance=0.85,
-            textprops={"fontsize": 9},
-        )
-        ax.pie(
-            inner_counts,
-            radius=0.69,
-            labels=[f"{label}\nn={count}" for label, count in zip(level_labels, inner_counts)],
-            colors=inner_colors,
-            startangle=90,
-            counterclock=False,
-            wedgeprops={"width": 0.30, "edgecolor": "white", "linewidth": 1.2},
-            labeldistance=0.76,
-            textprops={"fontsize": 8, "ha": "center"},
-        )
-        ax.legend(
-            wedges_outer,
-            outer_labels,
-            title="Outer ring: threshold result by score level",
-            loc="center left",
-            bbox_to_anchor=(1.0, 0.5),
-            fontsize="small",
-        )
-        ax.text(0, 0, f"All targets\n{total}", ha="center", va="center", fontsize=11)
-    else:
-        ax.text(0, 0, "No targets\nto plot", ha="center", va="center", fontsize=12)
-    plot_title = (f"{category}: N_sigma pass/fail by Average-score level"
-                  if category else "All categories: N_sigma pass/fail by Average-score level")
-    ax.set_title(plot_title + "\nInner ring: score level · Outer ring: threshold result")
-    ax.set_aspect("equal")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig.tight_layout()
-    fig.savefig(path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
 
 
 def make_category_correlation_plot(
@@ -377,21 +344,87 @@ def category_filename(category: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "_", category).strip("_").lower()
 
 
+
+
+def make_donut(summary: pd.DataFrame, path: Path, min_pixels: int, title: str) -> None:
+    pivot = summary.pivot(
+        index="average_level", columns="passes_new_threshold", values="target_count"
+    ).reindex(LEVEL_LABELS, fill_value=0)
+    pivot = pivot.reindex(columns=[False, True], fill_value=0)
+    level_colors = ["#f28e8e", "#ffbf78", "#79dd83"]
+    inner_counts = []
+    outer_counts = []
+    outer_colors = []
+    outer_labels = []
+    for level, color in zip(LEVEL_LABELS, level_colors):
+        fail_count = int(pivot.loc[level, False])
+        pass_count = int(pivot.loc[level, True])
+        inner_counts.append(fail_count + pass_count)
+        outer_counts.extend([fail_count, pass_count])
+        outer_colors.extend([color + "88", color])
+        outer_labels.extend([
+            f"{level} — Fail (<{min_pixels} pixels)",
+            f"{level} — Pass (≥{min_pixels} pixels)",
+        ])
+
+    fig, ax = plt.subplots(figsize=(10, 7))
+    total = sum(inner_counts)
+    if total:
+        wedges, _, _ = ax.pie(
+            outer_counts,
+            radius=1.0,
+            colors=outer_colors,
+            startangle=90,
+            counterclock=False,
+            wedgeprops={"width": 0.30, "edgecolor": "white", "linewidth": 1.2},
+            autopct=lambda pct: f"{int(round(pct * total / 100))}" if pct >= 4 else "",
+            pctdistance=0.85,
+            textprops={"fontsize": 9},
+        )
+        ax.pie(
+            inner_counts,
+            radius=0.69,
+            labels=[f"{level}\nn={count}" for level, count in zip(LEVEL_LABELS, inner_counts)],
+            colors=level_colors,
+            startangle=90,
+            counterclock=False,
+            wedgeprops={"width": 0.30, "edgecolor": "white", "linewidth": 1.2},
+            labeldistance=0.76,
+            textprops={"fontsize": 8, "ha": "center"},
+        )
+        ax.legend(
+            wedges,
+            outer_labels,
+            title="Outer ring: threshold result by score level",
+            loc="center left",
+            bbox_to_anchor=(1.0, 0.5),
+            fontsize="small",
+        )
+        ax.text(0, 0, f"All targets\n{total}", ha="center", va="center", fontsize=11)
+    else:
+        ax.text(0, 0, "No scored targets\nto plot", ha="center", va="center", fontsize=12)
+    ax.set_title(f"{title}\nPass if at least {min_pixels} pixels have N_sigma > 3")
+    ax.set_aspect("equal")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nsigma-script", type=Path, default=DEFAULT_NSIGMA)
     parser.add_argument("--visual-xlsx", type=Path, default=DEFAULT_VISUAL_XLSX)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--categories", nargs="+", default=None,
-                        help="Optional category worksheet names; default uses all TARGETID worksheets.")
+                        help="Optional category worksheet names; default uses all TARGETID worksheets.")               
     return parser.parse_args()
-
 
 def main():
     args = parse_args()
     pipeline = load_pipeline(args.nsigma_script)
     workbook_targets = read_workbook_targets(args.visual_xlsx, args.categories)
-
+    dirs = {threshold: args.output_dir / str(threshold) for threshold in THRESHOLDS}
     target_results = []
     pair_results = []
     for row in workbook_targets:
@@ -416,7 +449,6 @@ def main():
             f"pairs={result['number_of_pairs']} "
             f"max_pixels>{NSIGMA_THRESHOLD:g}="
             f"{result['max_pixels_nsigma_gt_3']} "
-            f"pass={result['passes_new_threshold']} "
             f"level={result['average_level']}"
         )
 
@@ -425,22 +457,7 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     targets.to_csv(args.output_dir / "target_nsigma_pixel_results.csv", index=False)
     pairs.to_csv(args.output_dir / "epoch_pair_nsigma_pixel_results.csv", index=False)
-    summary = make_summary(targets)
-    summary.to_csv(args.output_dir / "pass_counts_by_average_level.csv", index=False)
-    if not targets.empty:
-        category_summary = (
-            targets.groupby(["category", "average_level", "passes_new_threshold"])
-            .size().rename("target_count").reset_index()
-        )
-    else:
-        category_summary = pd.DataFrame(columns=[
-            "category", "average_level", "passes_new_threshold", "target_count"
-        ])
-    category_summary.to_csv(
-        args.output_dir / "pass_counts_by_category_and_level.csv", index=False
-    )
-    # Save combined plots across categories, then one set for each category.
-    make_plot(summary, args.output_dir / "pass_counts_by_average_level.png")
+
     make_category_correlation_plot(
         targets,
         None,
@@ -462,12 +479,6 @@ def main():
     for category in sorted(targets["category"].dropna().unique()):
         category_targets = targets[targets["category"] == category]
         suffix = category_filename(category)
-        category_level_summary = make_summary(category_targets)
-        make_plot(
-            category_level_summary,
-            args.output_dir / f"pass_counts_by_average_level_{suffix}.png",
-            category,
-        )
         make_category_correlation_plot(
             category_targets,
             category,
@@ -486,9 +497,60 @@ def main():
             threshold_line=NSIGMA_THRESHOLD,
         )
 
-    print("\nPass counts by Average level:")
-    print(summary.to_string(index=False))
-    print(f"\nOutputs written to: {args.output_dir}")
+
+
+
+    for threshold in THRESHOLDS:
+        output_dir = dirs[threshold]
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        summary = make_summary(targets, threshold)
+        summary.to_csv(
+            output_dir / "pass_counts_by_average_level.csv",
+            index=False,
+        )
+
+        make_donut(
+            summary,
+            output_dir / "pass_counts_by_average_level.png",
+            threshold,
+            "All categories: N_sigma pass/fail by Average-score level",
+        )
+
+        category_summaries = []
+
+        for category in sorted(targets["category"].dropna().unique()):
+            subset = targets[targets["category"] == category]
+            category_summary = make_summary(subset, threshold)
+            suffix = category_filename(str(category))
+
+            category_summary.to_csv(
+                output_dir / f"pass_counts_by_average_level_{suffix}.csv",
+                index=False,
+            )
+
+            # Add the category name before combining category tables.
+            category_summaries.append(
+                category_summary.assign(category=category)
+            )
+
+            make_donut(
+                category_summary,
+                output_dir / f"pass_counts_by_average_level_{suffix}.png",
+                threshold,
+                f"{category}: N_sigma pass/fail by Average-score level",
+            )
+
+        pd.concat(category_summaries, ignore_index=True).to_csv(
+            output_dir / "pass_counts_by_category_and_level.csv",
+            index=False,
+        )
+
+        print(f"\nPass counts for >= {threshold} significant pixels:")
+        print(summary.to_string(index=False))
+        print(f"Outputs written to: {output_dir}")
+
+
 
 
 if __name__ == "__main__":
