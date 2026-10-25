@@ -60,7 +60,7 @@ def main():
     p.add_argument('--catalog', type=Path,
                    default=ROOT / 'quality_cut/CLQ_candidates_7days_merged.csv')
     p.add_argument('--latent-csv', type=Path,
-                   default=ROOT / 'latent/latent_all_targets.csv')
+                   default= '/work/10579/prisha/ls6/desi_project/latent_info.csv')
     p.add_argument('--output-dir', type=Path, default=OUT)
     args = p.parse_args()
     result = compute_statistics(read_ids(args.catalog), read_ids(args.latent_csv))
