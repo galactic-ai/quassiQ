@@ -139,6 +139,22 @@ def find_variance_columns(frame: pd.DataFrame):
         raise ValueError(f"Variance CSV has no TARGETID column. Columns: {list(frame.columns)}")
     # Accept either one aggregate field or one field per latent dimension.
     # For Latent1_var ... Latent10_var, read all dimensions and average them.
+    
+    dimension_columns = [
+        column for column in frame.columns
+        if re.fullmatch(
+            r"latent\d+_var", str(column).strip(), flags=re.IGNORECASE
+        )
+    ]
+
+    if len(dimension_columns) == 10:
+        return id_column, dimension_columns
+
+    raise ValueError(
+        f"Expected 10 individual latent-variance columns; found "
+        f"{len(dimension_columns)}."
+    )
+
     exact = [columns[name] for name in ("latent_variance", "variance") if name in columns]
     if len(exact) == 1:
         variance_columns = exact
@@ -180,6 +196,7 @@ def read_variances(path: Path):
     # Collapse repeated target rows by averaging each dimension first.
     grouped = frame.groupby("TARGETID", as_index=False)[variance_columns].mean()
     grouped["latent_variance"] = grouped[variance_columns].mean(axis=1)
+    grouped["max_latent_variance"] = grouped[variance_columns].max(axis=1, skipna=False)
     grouped["variance_dimensions_used"] = grouped[variance_columns].notna().sum(axis=1)
     return grouped.set_index("TARGETID").to_dict(orient="index")
 
@@ -187,61 +204,105 @@ def read_variances(path: Path):
 def lookup_variance(target_id: str, lookup) -> tuple[float, str]:
     if target_id in lookup:
         return lookup[target_id], "exact"
-    return {"latent_variance": np.nan, "variance_dimensions_used": 0}, "not_found"
+    return {
+        "latent_variance": np.nan,
+        "max_latent_variance": np.nan,
+        "variance_dimensions_used": 0,
+    }, "not_found"
 
 
 def make_plot(
     data: pd.DataFrame,
     output_path: Path,
     category: str | None = None,
+    value_column: str = "latent_variance",
 ) -> None:
-    if category is None:
-        usable = data.dropna(subset=["Average", "latent_variance"])
-    else:
-        usable = data[data["category"] == category].dropna(
-            subset=["Average", "latent_variance"]
+    value_column = "max_latent_variance"
+
+    if value_column not in data.columns:
+        raise ValueError(
+            "Missing max_latent_variance. Calculate it in read_variances() first."
         )
+
+    usable = data.copy()
+    if category is not None:
+        usable = usable[usable["category"] == category]
+
+    usable = usable[
+        np.isfinite(usable["Average"])
+        & np.isfinite(usable[value_column])
+    ]
+
     fig, ax = plt.subplots(figsize=(8.5, 6))
     categories = sorted(usable["category"].dropna().unique())
     colors = plt.get_cmap("tab10")
+
     for index, plot_category in enumerate(categories):
         group = usable[usable["category"] == plot_category]
+
         ax.scatter(
-            group["Average"], group["latent_variance"],
-            s=34, alpha=0.72, color=colors(index % 10),
+            group["Average"],
+            group[value_column],
+            s=34,
+            alpha=0.72,
+            color={"Non latent": "green",
+                    "Latent involved": "orange",
+                }.get(plot_category, colors(index % 10)),
             label=f"{plot_category} (n={len(group)})",
         )
 
-    if len(usable) >= 2:
-        pearson = usable["Average"].corr(usable["latent_variance"], method="pearson")
-        spearman = usable["Average"].rank().corr(usable["latent_variance"].rank())
-        label = f"Pearson r={pearson:.2f}; Spearman ρ={spearman:.2f}; n={len(usable)}"
-        if (usable["Average"].nunique() > 1
-                and usable["latent_variance"].nunique() > 1):
-            slope, intercept = np.polyfit(usable["Average"], usable["latent_variance"], 1)
-            x_line = np.linspace(usable["Average"].min(), usable["Average"].max(), 100)
-            ax.plot(x_line, slope * x_line + intercept, color="black", linewidth=1.4,
-                    label=label)
-        else:
-            ax.text(0.03, 0.97, label, transform=ax.transAxes, va="top")
-    else:
-        ax.text(0.03, 0.97, f"Too few matched points to calculate correlation (n={len(usable)})",
-                transform=ax.transAxes, va="top")
+    if (
+        len(usable) >= 2
+        and usable["Average"].nunique() > 1
+        and usable[value_column].nunique() > 1
+    ):
+        x = usable["Average"]
+        y = usable[value_column]
 
+        pearson = x.corr(y)
+        spearman = x.rank().corr(y.rank())
+
+        slope, intercept = np.polyfit(x, y, 1)
+        x_line = np.linspace(x.min(), x.max(), 100)
+
+        ax.plot(
+            x_line,
+            slope * x_line + intercept,
+            color="black",
+            linewidth=1.4,
+            label=(
+                f"Pearson r={pearson:.2f}; "
+                f"Spearman ρ={spearman:.2f}; n={len(usable)}"
+            ),
+        )
+    else:
+        ax.text(
+            0.03,
+            0.97,
+            f"Correlation unavailable: insufficient data or constant values "
+            f"(n={len(usable)})",
+            transform=ax.transAxes,
+            va="top",
+        )
+    metric = (
+        "Maximum latent variance"
+        if value_column == "max_latent_variance"
+        else "Mean latent variance"
+    )
+
+    group_label = category if category else "All categories"
+    ax.set_title(f"{group_label}: visual score vs {metric.lower()}")
     ax.set_xlabel("Average visual-inspection score")
-    ax.set_ylabel("Mean latent variance across dimensions")
-    plot_title = (f"{category}: visual-inspection score vs mean latent variance"
-                  if category else
-                  "All categories: visual-inspection score vs mean latent variance")
-    ax.set_title(plot_title)
+    ax.set_ylabel(f"{metric} across 10 dimensions")
     ax.grid(alpha=0.25)
+
     if categories:
         ax.legend(fontsize="small", loc="best")
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
     fig.savefig(output_path, dpi=220, bbox_inches="tight")
     plt.close(fig)
-
 
 def category_filename(category: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "_", category).strip("_").lower()
@@ -279,13 +340,69 @@ def main():
     csv_path = args.output_dir / "workbook_targets_score_latent_variance.csv"
     results.to_csv(csv_path, index=False)
     plot_paths = []
-    combined_path = args.output_dir / "score_vs_latent_variance.png"
-    make_plot(results, combined_path)
-    plot_paths.append(combined_path)
+
+    for value_column, prefix in [
+        ("latent_variance", "score_vs_latent_variance"),
+        ("max_latent_variance", "score_vs_max_latent_variance"),
+    ]:
+        combined_path = args.output_dir / f"{prefix}.png"
+        make_plot(
+            results,
+            combined_path,
+            value_column=value_column,
+        )
+        plot_paths.append(combined_path)
+
+        for category in sorted(results["category"].dropna().unique()):
+            plot_path = args.output_dir / (
+                f"{prefix}_{category_filename(category)}.png"
+            )
+            make_plot(
+                results,
+                plot_path,
+                category=category,
+                value_column=value_column,
+            )
+            plot_paths.append(plot_path)
     for category in sorted(results["category"].dropna().unique()):
         plot_path = args.output_dir / f"score_vs_latent_variance_{category_filename(category)}.png"
         make_plot(results, plot_path, category)
         plot_paths.append(plot_path)
+
+    # Identify all categories involving latent selection.
+    latent_mask = results["category"].map(
+        lambda name: (
+            "latent" in category_key(name)
+            or category_key(name) == "allthree"
+        )
+    )
+
+    comparison_groups = [
+        ("Latent involved", results.loc[latent_mask].copy()),
+        ("Non latent", results.loc[~latent_mask].copy()),
+    ]
+
+    for group_name, group_data in comparison_groups:
+        # Give this pooled group one label for the title and legend.
+        group_data["category"] = group_name
+
+        for value_column, metric in [
+            ("latent_variance", "mean"),
+            ("max_latent_variance", "max"),
+        ]:
+            plot_path = args.output_dir / (
+                f"score_vs_{metric}_latent_variance_"
+                f"{category_filename(group_name)}.png"
+            )
+
+            make_plot(
+                group_data,
+                plot_path,
+                category=group_name,
+                value_column=value_column,
+            )
+
+            plot_paths.append(plot_path)
 
     usable = results.dropna(subset=["Average", "latent_variance"])
     print(f"Workbook target rows: {len(results)}")
