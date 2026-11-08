@@ -59,6 +59,11 @@ def detect_min_latents_high_variance(latent_subset, combos, var_cut=0.5, min_cou
         axis=1,
     )
     passed_targets["high_var_pairs"] = passed_targets["TARGETID"].map(high_pairs)
+
+    cols_order = list(passed_targets.columns)
+    cols_order.remove("high_var_pairs")
+    cols_order.insert(1, "high_var_pairs")   # index 1 = right after the first column
+    passed_targets = passed_targets[cols_order]
     # keep ALL coadds of the passing targets
     
 

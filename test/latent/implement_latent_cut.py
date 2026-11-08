@@ -326,6 +326,7 @@ def check_overlap(manual_targets):
         files = [i for i, ids in ids_per_latent.items() if t in ids]
         print(f"{t}: in {len(files)} files {files}")
 
+
 def detect_high_variance_targets(latent_subset, latents=(1, 4, 6, 8), var_cut=0.3):
     cols = [f"Latent{i}" for i in latents]
 
@@ -351,25 +352,47 @@ def detect_high_variance_targets(latent_subset, latents=(1, 4, 6, 8), var_cut=0.
 
     return passed_targets
 
-def detect_min_latents_high_variance(latent_subset, latents=(1, 4, 5, 6, 8), var_cut=0.5, min_count=2):
+def names(mask_df):
+    return mask_df.apply(lambda row: ",".join(row.index[row.values]), axis=1)
+
+
+def detect_min_latents_high_variance(latent_subset, latents=(4, 5, 6), var_cut=0.8, min_count=1, flip_only_high_var=True):
     cols = [f"Latent{i}" for i in latents]
 
     # variance of each latent across a target's coadds
-    var_df = latent_subset.groupby("TARGETID")[cols].var()
+    grouped = latent_subset.groupby("TARGETID")[cols]
+    var_df = grouped.var()
+    min_df = grouped.min()
+    max_df = grouped.max()
 
     # how many of the latents exceed the cut, per target
-    n_high = (var_df > var_cut).sum(axis=1)
-    passed_ids = set(var_df.index[n_high >= min_count])
+    high_var = var_df > var_cut
+    n_high = high_var.sum(axis=1)
+
+    # a latent "flips" if it is negative in at least one coadd and positive in at least one
+    flips = (min_df < 0) & (max_df > 0)
+    if flip_only_high_var:
+        flips = flips & high_var
+    has_flip = flips.any(axis=1)
+
+    passed_ids = set(var_df.index[(n_high >= min_count) & has_flip])
+    high_var_names = names(high_var)
+    flip_names = names(flips)
+    
+    
+
 
     # keep ALL coadds of the passing targets
-    passed_targets = latent_subset[latent_subset["TARGETID"].isin(passed_ids)]
+    passed_targets = latent_subset[latent_subset["TARGETID"].isin(passed_ids)].copy()
+    passed_targets["high_var_latents"] = passed_targets["TARGETID"].map(high_var_names)
+    passed_targets["flip_latents"] = passed_targets["TARGETID"].map(flip_names)
 
-    print(f"targets with at least {min_count} of {cols} having variance > {var_cut}: {len(passed_ids)}")
+    print(f"targets with at least {min_count} of {len(cols)} having variance > {var_cut} and a sign flip: {len(passed_ids)}")
     print(f"coadds recorded for those targets: {len(passed_targets)}")
 
     out_path = (
         "/work/11161/kanyuni/ls6/quassiQ_project/latent/passed/"
-        f"passed_targets_latent{'_'.join(map(str, latents))}_variance_{var_cut}_atleast{min_count}.csv"
+        f"passed_targets_latent{'_'.join(map(str, latents))}_variance_{var_cut}_atleast{min_count}_signflip.csv"
     )
     passed_targets.to_csv(out_path, index=False)
     print(f"saved {out_path}")
@@ -383,14 +406,14 @@ def main():
     # passed_targets = implement_latent1_4_cut(latent_subset, latent1_cut, latent4_cut)
     # implement_latent1_variance_cut(latent_subset, latent1_variance_cut)
     # positive_negative_slope(latent_subset, latent1_cut)
-    compute_variance_latent(latent_subset, latent_variance_cut)
+    #compute_variance_latent(latent_subset, latent_variance_cut)
     #mplement_latent_i_variance_cut(latent_subset, 4, 0.7) 
     # #implement_latent4_cut(latent_subset, latent4_cut)
     #implement_latent4_variance_and_cut(latent_subset, 0.5, 0)
     # #implement_latent1_neg_latent8_pos_cut(latent_subset, 0.5, 0, 1.0)
     # implement_latent1_8_variance_cut(latent_subset, 0.5)
     # implement_latent1_8_variance_cut(latent_subset, 0.5, latent1_low_cut=-1.0, latent8_high_cut=1.0)
-    check_overlap(manual_targets)
+    #check_overlap(manual_targets)
     #passed = detect_high_variance_targets(latent_subset)
     passed = detect_min_latents_high_variance(latent_subset)
 
