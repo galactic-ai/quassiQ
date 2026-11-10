@@ -15,3 +15,8 @@ Find Changing-look AGNs using [SpenderQ](https://github.com/galactic-ai/SpenderQ
 |   └── file <- inspect file
 └── README.md
 ```
+
+## Authors
+Kanyuni Iemoto (Undergraduate student at UT Austin)
+Prisha Desai (Undergraduate student at UT Austin)
+ChangHoon Hahn (UT Austin)
