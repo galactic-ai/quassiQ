@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from astropy.io import fits
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use('Agg') # do not open a figure
 import matplotlib.pyplot as plt
 from desispec.io import read_spectra
 from desispec.coaddition import coadd_cameras
@@ -71,11 +71,13 @@ def run_spenderq(df, coadd_dir="output_coadds", out_dir="reconstructions"):
     latent_csv = "latent_info.csv"
     latent_cols = ["TARGETID", "LASTNIGHT"] + [f"Latent{i+1}" for i in range(10)]
 
+    # creates latent_info.csv if it doesn't exist; this just writes the header
     if not os.path.exists(latent_csv):
         with open(latent_csv, 'w', newline='') as f:
             csv.writer(f).writerow(latent_cols)
 
     done_latents = set()
+
     try:
         _d = pd.read_csv(latent_csv, usecols=["TARGETID", "LASTNIGHT"])
         done_latents = set(zip(_d["TARGETID"].astype(int), _d["LASTNIGHT"].astype(int)))
@@ -123,13 +125,13 @@ def run_spenderq(df, coadd_dir="output_coadds", out_dir="reconstructions"):
             raw_wave = sp.wave['brz']
             raw_flux = sp.flux['brz'][0]
             raw_ivar = sp.ivar['brz'][0]
-
+            # so that the arrays line up.
             if len(raw_flux) != n_obs:
                 if len(raw_wave) != len(raw_flux):
                     print(f"[{idx}/{total_rows}] Skipping {tid} on {night}: Mismatched wave/flux lengths ({len(raw_wave)} vs {len(raw_flux)})")
                     continue
 
-                flux = interp1d(raw_wave, raw_flux, bounds_error=False, fill_value=0.0)(wave_obs)
+                flux = interp1d(raw_wave, raw_flux, bounds_error=False, fill_value=0.0)(wave_obs) # wave_obs is an array, f(wave_obs) evaluates every element in wave_obs
                 ivar = interp1d(raw_wave, raw_ivar, bounds_error=False, fill_value=0.0)(wave_obs)
             else:
                 flux = raw_flux
@@ -152,11 +154,11 @@ def run_spenderq(df, coadd_dir="output_coadds", out_dir="reconstructions"):
             # Count valid pixels before SpenderQ absorption masking
             pre_sq_valid_pixels = (w_t.cpu().numpy().squeeze() > 0).sum()
 
-            with torch.no_grad():
+            with torch.no_grad(): # we're not training so computing gradients would be a waste of time
                 s, recon = sq.eval(spec_t, w_t, z_t)
 
                 # w_t is modified in-place by SpenderQ eval()
-                updated_weights = w_t.cpu().numpy().squeeze()
+                updated_weights = w_t.cpu().numpy().squeeze() # back to CPU
 
             # Count valid pixels after SpenderQ masks absorption
             post_sq_valid_pixels = (updated_weights > 0).sum()
@@ -200,7 +202,7 @@ def run_spenderq(df, coadd_dir="output_coadds", out_dir="reconstructions"):
             plt.savefig(png_out, dpi=150, bbox_inches='tight')
             plt.close()
 
-            # Append Latents 
+            # Append Latents; if latent_info.csv didn't exist, this is where latent values are stored
             if (tid, night) not in done_latents:
                 with open(latent_csv, 'a', newline='') as f:
                     csv.writer(f).writerow([tid, night] + list(latents))
