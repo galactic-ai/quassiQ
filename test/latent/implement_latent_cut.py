@@ -380,9 +380,15 @@ def names(mask_df):
     return mask_df.apply(lambda row: ",".join(row.index[row.values]), axis=1)
 
 def detect_latent_spread(latent_subset, latents=(1, 3, 4, 5, 6, 7), spread_cut=1,
-                         min_count=1, min_obs=2, verbose=True):
-    """Returns a table (indexed by TARGETID) of targets whose spread (max - min across
-    epochs) exceeds spread_cut in at least min_count of the given latents."""
+                         min_count=1, min_obs=2, subset_ids=None, verbose=True):
+    """... subset_ids: optional set of TARGETIDs; only these targets are used."""
+    if subset_ids is not None:
+        n_before = latent_subset["TARGETID"].nunique()
+        latent_subset = latent_subset[latent_subset["TARGETID"].isin(subset_ids)]
+        if verbose:
+            print(f"restricted to final_subset: {latent_subset['TARGETID'].nunique()} of {n_before} targets, "
+                  f"{len(latent_subset)} coadds")
+
     cols = [f"Latent{i}" for i in latents]
     grouped = latent_subset.groupby("TARGETID")[cols]
     spread = grouped.max() - grouped.min()
