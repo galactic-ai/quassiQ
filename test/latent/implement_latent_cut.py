@@ -1,5 +1,9 @@
+"This script stores all kinds of functions that filter targets with certain"
+
 import numpy as np
 import pandas as pd
+import os 
+import argparse
 
 subset_target_path = "/work/10579/prisha/ls6/desi_project/final_subset.csv"
 latent_all_path = "/work/10579/prisha/ls6/desi_project/latent_info.csv"
@@ -54,6 +58,26 @@ def implement_latent1_cut(latent_subset, latent1_cut):
     print(f"saved {out_path}")
 
     return passed_targets
+
+def implement_latent6_cut(latent_subset, difference):
+    ids = set(latent_subset["TARGETID"])
+    passed_ids = []
+    for id in ids:
+        latent6 = latent_subset["Latent6"][latent_subset["TARGETID"] == id]
+        max = np.max(latent6)
+        min = np.min(latent6)
+        diff = max - min
+        if diff > difference: 
+            passed_ids.append(id)
+
+    out_path = (
+        "/work/11161/kanyuni/ls6/quassiQ_project/latent/passed/"
+        f"passed_targets_latent6_difference_{difference}.csv"
+    )       
+    pd.DataFrame({"TARGETID": passed_ids}).to_csv(out_path, index=False)
+    print(f"saved {out_path}")
+    return passed_ids
+
 
 def implement_latent1_4_cut(latent_subset, latent1_cut, latent4_cut):
     mask = (latent_subset["Latent1"] <= latent1_cut) & (latent_subset["Latent4"] <= latent4_cut)
@@ -355,8 +379,36 @@ def detect_high_variance_targets(latent_subset, latents=(1, 4, 6, 8), var_cut=0.
 def names(mask_df):
     return mask_df.apply(lambda row: ",".join(row.index[row.values]), axis=1)
 
+def detect_latent_spread(latent_subset, latents=(1, 3, 4, 5, 6, 7), spread_cut=1,
+                         min_count=1, min_obs=2, verbose=True):
+    """Returns a table (indexed by TARGETID) of targets whose spread (max - min across
+    epochs) exceeds spread_cut in at least min_count of the given latents."""
+    cols = [f"Latent{i}" for i in latents]
+    grouped = latent_subset.groupby("TARGETID")[cols]
+    spread = grouped.max() - grouped.min()
+    n_obs = latent_subset.groupby("TARGETID").size()
+    spread = spread[n_obs.reindex(spread.index) >= min_obs]
 
-def detect_min_latents_high_variance(latent_subset, latents=(4, 5, 6), var_cut=0.8, min_count=1, flip_only_high_var=True):
+    passed = spread > spread_cut
+    n_passed = passed.sum(axis=1)
+    keep = n_passed >= min_count
+
+    table = spread[keep].copy()
+    table.columns = [f"spread_{c}" for c in cols]
+    table.insert(0, "n_obs", n_obs.reindex(table.index))
+    table.insert(1, "n_latents_passed", n_passed[keep])
+    table.insert(2, "detected_latents",
+                 passed[keep].apply(lambda r: ",".join(str(l) for l, ok in zip(latents, r) if ok), axis=1))
+    table["max_spread"] = spread[keep].max(axis=1)
+    table = table.sort_values(["n_latents_passed", "max_spread"], ascending=False)
+
+    if verbose:
+        print(f"targets checked: {len(spread)}  passed: {len(table)}")
+        for c in cols:
+            print(f"   {c:9s} {int(passed[c].sum()):6d}")
+    return table.round(3)
+
+def detect_min_latents_high_variance(latent_subset, latents=(1, 3, 4, 5, 6, 7), var_cut=1.0, min_count=1, flip_only_high_var=False):
     cols = [f"Latent{i}" for i in latents]
 
     # variance of each latent across a target's coadds
@@ -379,8 +431,6 @@ def detect_min_latents_high_variance(latent_subset, latents=(4, 5, 6), var_cut=0
     high_var_names = names(high_var)
     flip_names = names(flips)
     
-    
-
 
     # keep ALL coadds of the passing targets
     passed_targets = latent_subset[latent_subset["TARGETID"].isin(passed_ids)].copy()
@@ -392,13 +442,15 @@ def detect_min_latents_high_variance(latent_subset, latents=(4, 5, 6), var_cut=0
 
     out_path = (
         "/work/11161/kanyuni/ls6/quassiQ_project/latent/passed/"
-        f"passed_targets_latent{'_'.join(map(str, latents))}_variance_{var_cut}_atleast{min_count}_signflip.csv"
+        f"passed_targets_latent{'_'.join(map(str, latents))}_variance_{var_cut}_atleast{min_count}.csv"
     )
     passed_targets.to_csv(out_path, index=False)
     print(f"saved {out_path}")
 
     return passed_targets
 
+
+    
 def main():
     count()
     latent_subset = extract_subset_latents()
@@ -414,9 +466,22 @@ def main():
     # implement_latent1_8_variance_cut(latent_subset, 0.5)
     # implement_latent1_8_variance_cut(latent_subset, 0.5, latent1_low_cut=-1.0, latent8_high_cut=1.0)
     #check_overlap(manual_targets)
-    #passed = detect_high_variance_targets(latent_subset)
-    passed = detect_min_latents_high_variance(latent_subset)
+    # passed = detect_high_variance_targets(latent_subset)
+    # passed = detect_min_latents_high_variance(latent_subset)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--spread_cut", type=float, default=1.0)
+    parser.add_argument("--min_count", type=int, default=1)
+    args = parser.parse_args()
 
+    table = detect_latent_spread(latent_subset, spread_cut=args.spread_cut,
+                                 min_count=args.min_count)
+
+    out_dir = "/work/11161/kanyuni/ls6/quassiQ_project/latent/passed"
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir,
+                            f"passed_targets_latent_spread_above_{args.spread_cut:g}_atleast{args.min_count}.csv")
+    table.to_csv(out_path)
+    print(f"saved {out_path} ({len(table)} targets)")
     
 if __name__ == "__main__":
     main()
