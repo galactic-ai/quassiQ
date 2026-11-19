@@ -479,8 +479,10 @@ def main():
     parser.add_argument("--min_count", type=int, default=1)
     args = parser.parse_args()
 
-    table = detect_latent_spread(latent_subset, spread_cut=args.spread_cut,
-                                 min_count=args.min_count)
+    table = detect_latent_spread(latent_all,
+                                 spread_cut=args.spread_cut,
+                                 min_count=args.min_count,
+                                 subset_ids=set(subset_target["TARGETID"]))
 
     out_dir = "/work/11161/kanyuni/ls6/quassiQ_project/latent/passed"
     os.makedirs(out_dir, exist_ok=True)
