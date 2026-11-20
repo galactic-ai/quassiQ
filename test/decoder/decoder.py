@@ -4,6 +4,7 @@ sys.path.append("/work/11161/kanyuni/ls6/quassiQ_project/spenderq/src")
 
 import numpy as np
 import torch
+import seaborn as sns
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -31,12 +32,24 @@ out_root = "/work/11161/kanyuni/ls6/quassiQ_project/decoder"
 # COLORS = ['tab:purple', 'tab:blue', 'tab:green', 'tab:orange']
 # LABELS = ['min', '16th', '84th', 'max']
 
+# np.linspace(np.min(), np.max(), 20)
+n_value = 10 
+NEW_VAL = {
+    1:  np.linspace(-3.1142, 5.1101, n_value),
+    2:  np.linspace(-1.9557, 4.2888, n_value),
+    3:  np.linspace(-3.3126, 2.0338, n_value),
+    4:  np.linspace(-2.8105,5.2354, n_value),
+    5:  np.linspace(-7.5185, 1.8542, n_value),
+    6:  np.linspace(-4.2829, 1.3293, n_value),
+    7:  np.linspace(-1.6595, 3.7149, n_value),
+    8:  np.linspace(-4.2252, 7.6572, n_value),
+    9:  np.linspace(-5.5418, 3.8828, n_value),
+    10: np.linspace(-3.3234, 2.5936, n_value),
+}
 
+COLORS = sns.color_palette("tab20", n_value)
 
-COLORS = ['tab:blue', 'tab:green']
-LABELS = ['16th', '84th']
-
-N_SWEEP = 21 
+# N_SWEEP = 21 
 # from corner plot (latent_corner.py)
 P16 = np.array([-1.8213,  0.0229, -0.1790, -1.4598, -0.6372,
                 -0.9653, -0.8453, -0.0861, -0.3044, -0.3705], dtype=np.float32)
@@ -51,20 +64,22 @@ P84 = np.array([-0.2580,  1.3265,  0.6263,  0.0710,  0.5901,
 #NEW_VAL = {i + 1: (P16[i], P84[i]) for i in range(10)}
 
 # (P0.13, P2.28, P97.72, P99.87) = (-3 sigma, -2 sigma, +2 sigma, +3 sigma)
-NEW_VAL = {
-    1:  (-2.6633, -2.2608,  1.6109, 3.6184),
-    2:  (-1.4626, -0.6727,  2.7320, 3.8584),
-    3:  (-1.8836, -0.9411,  1.0715, 1.5969),
-    4:  (-2.4405, -2.0222,  1.4067, 2.9262),
-    5:  (-5.0029, -2.3848,  0.9375, 1.3031),
-    6:  (-3.0621, -1.9341,  0.5589, 0.9225),
-    7:  (-1.4066, -1.1242,  1.2750, 2.5776),
-    8:  (-3.2852, -1.5618,  4.0277, 6.7008),
-    9:  (-3.6848, -1.9102,  1.7544, 2.7036),
-    10: (-2.4197, -1.2966,  1.3554, 2.1585),
-}
-COLORS = ['tab:purple', 'tab:blue', 'tab:green', 'tab:orange']
-LABELS = ['P0.13', 'P2.28', 'P97.72', 'P99.87']
+# NEW_VAL = {
+#     1:  (-2.6633, -2.2608,  1.6109, 3.6184),
+#     2:  (-1.4626, -0.6727,  2.7320, 3.8584),
+#     3:  (-1.8836, -0.9411,  1.0715, 1.5969),
+#     4:  (-2.4405, -2.0222,  1.4067, 2.9262),
+#     5:  (-5.0029, -2.3848,  0.9375, 1.3031),
+#     6:  (-3.0621, -1.9341,  0.5589, 0.9225),
+#     7:  (-1.4066, -1.1242,  1.2750, 2.5776),
+#     8:  (-3.2852, -1.5618,  4.0277, 6.7008),
+#     9:  (-3.6848, -1.9102,  1.7544, 2.7036),
+#     10: (-2.4197, -1.2966,  1.3554, 2.1585),
+# }
+# COLORS = ['tab:purple', 'tab:blue', 'tab:green', 'tab:orange']
+# LABELS = ['P0.13', 'P2.28', 'P97.72', 'P99.87']
+
+
 
 # def vary_latent(latent, new_value):
 #     variants = []
@@ -89,6 +104,7 @@ def load_decoder():
     return model, sq.wave_recon(), device
 
 
+# take the function in the model
 def decode(model, device, latent):
     s = torch.from_numpy(latent)[None, :].to(device)
     with torch.no_grad():
@@ -146,24 +162,24 @@ if __name__ == "__main__":
     # 1. specified values, one latent at a time
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.plot(wave_rest, base, color='gray', label="median latents")
-    out_path = os.path.join(out_root, f"default_model2.png")
+    out_path = os.path.join(out_root, f"default_model.png")
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    ax.legend()
+    plt.close(fig)
     for index, values in NEW_VAL.items():
         out_dir = os.path.join(out_root, str(index))
         os.makedirs(out_dir, exist_ok=True)
-        out_path = os.path.join(out_dir, f"latent{index}_values_2n3sigma_model2.png")
+        out_path = os.path.join(out_dir, f"latent{index}_values_{n_value}points_min_to_max.png")
 
         fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(wave_rest, base, color='gray', alpha=0.5, lw=0.8, label="median latents")
 
-        for value, color, name in zip(values, COLORS, LABELS):
-            changed = decode(model, device, set_latent(latent_default, index, value))
-            ax.plot(wave_rest, changed, color=color, alpha=0.6, lw=0.8, label=f"Latent{index} {name} = {value}")
-
+        curves = decode_sweep(model, device, latent_default, index, values)  
+        for i, (curve, value) in enumerate(zip(curves, values)):
+            ax.plot(wave_rest, curve, color=COLORS[i], alpha=0.6, lw=0.8, label=f"{value:.2f}")
         ax.set_xlabel("Rest wavelength [A]")
-        ax.set_ylabel("Normalized flux")
+        ax.set_ylabel("Flux")
         ax.set_title(f"Latent{index}")
-        ax.legend()
+        ax.legend(ncol=2, fontsize=6)
         fig.savefig(out_path, dpi=150, bbox_inches='tight')
         plt.close(fig)
         print("saved", out_path)
