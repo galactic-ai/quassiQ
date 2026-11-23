@@ -4,8 +4,7 @@ One person runs the viewer on Lonestar6. Each reviewer connects to that same ser
 
 ## Start the viewer
 
-1. Put `index.html` and `build_vi_dataset.py` in the same directory on Lonestar6. Use the same directory each time so the viewer can find the existing score database.
-2. From a terminal on your own computer, log in with port forwarding. Replace `YOUR_TACC_USERNAME` with your username.
+1. From a terminal on your own computer, log in with port forwarding. Replace `YOUR_TACC_USERNAME` with your username.
 
    ```bash
    ssh -L 8000:127.0.0.1:8000 YOUR_TACC_USERNAME@ls6.tacc.utexas.edu
@@ -16,7 +15,7 @@ One person runs the viewer on Lonestar6. Each reviewer connects to that same ser
    ```bash
    python3 build_vi_dataset.py \
      --plots /work/10579/prisha/ls6/desi_project/plots \
-     --redshift-csv /path/to/post_chi2_calc.csv \
+     --redshift-csv /work/10579/prisha/ls6/desi_project/post_chi2_calc.csv \
      --latent-csv /work/10579/prisha/ls6/desi_project/latent_info.csv \
      --subset-csv /work/10579/prisha/ls6/desi_project/final_subset.csv \
      --serve
@@ -26,7 +25,7 @@ One person runs the viewer on Lonestar6. Each reviewer connects to that same ser
 
 ## Join as a reviewer
 
-1. Get the specific Lonestar6 login-node hostname from the person running the viewer. The generic Lonestar6 hostname can route you to a different node. [Lonestar6 SSH access](https://docs.tacc.utexas.edu/hpc/lonestar6/#secure-shell-ssh)
+1. Get the specific Lonestar6 login-node hostname from the person running the viewer. 
 2. In Terminal on your own computer, use your TACC username and the host’s exact node name. The following command uses `login1` as an example.
 
    ```bash
