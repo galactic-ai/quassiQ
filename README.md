@@ -15,6 +15,10 @@ Find Changing-look AGNs using [SpenderQ](https://github.com/galactic-ai/SpenderQ
 |   └── file <- inspect file
 └── README.md
 ```
+## Visual inspection
+
+See the [visual inspection guide](VISUAL_INSPECTION.md) for starting the viewer on Lonestar6, joining as a reviewer, and resuming a session after a disconnect.
+
 
 ## Authors
 Kanyuni Iemoto (Undergraduate student at UT Austin)

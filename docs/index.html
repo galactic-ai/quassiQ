@@ -1,0 +1,954 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>quassiQ · Visual inspection</title>
+<style>
+  :root {
+    color-scheme: light;
+    --paper: #f3f4f8;
+    --surface: #fff;
+    --ink: #202c59;
+    --muted: #515d78;
+    --line: #dce1ec;
+    --accent: #f0a202;
+    --wash: #fff4d8;
+    font: 15px/1.5 system-ui, sans-serif;
+    color: var(--ink);
+    background: var(--paper);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  h1, h2, p { margin: 0; }
+  button, input, select { font: inherit; }
+  button {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--ink);
+    padding: .48rem .75rem;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: var(--wash); border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  :focus-visible { outline: 3px solid #b87400; outline-offset: 2px; }
+  input, select {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: .5rem .65rem;
+    color: var(--ink);
+    width: 100%;
+  }
+  input:disabled { background: var(--paper); }
+  .topbar {
+    padding: 1.15rem clamp(1rem, 3vw, 2.5rem);
+    background: #202c59;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+  .brand { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
+  .brand strong { font-size: 1.45rem; letter-spacing: -.045em; }
+  .brand h1 { font-size: 1rem; font-weight: 500; color: #d7def1; }
+  .actions, .navigation, .viewer-tools { display: flex; align-items: center; flex-wrap: wrap; gap: .55rem; }
+  .topbar button { background: #2d3a6a; color: white; border-color: #7381a6; }
+  .topbar button:hover { background: #3b497d; }
+  .topbar .primary { background: #f0a202; color: #202c59; border-color: #f0a202; font-weight: 650; }
+  .topbar .primary:hover { background: #ffc44c; }
+  .workspace {
+    display: grid;
+    grid-template-columns: 280px minmax(0, 1fr);
+    gap: 1rem;
+    padding: 1rem clamp(1rem, 3vw, 2.5rem) 2rem;
+    max-width: 2000px;
+    margin: auto;
+    align-items: start;
+  }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 13px; }
+  .sidebar { padding: 1rem; }
+  .sidebar h2 { font-size: 1.15rem; letter-spacing: -.02em; }
+  .sidebar label { display: block; font-size: .85rem; font-weight: 650; margin: .85rem 0 .3rem; }
+  .range { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+  .range label { margin-top: .55rem; }
+  .latent-filter { margin: .9rem 0 0; padding: .55rem .65rem .65rem; border: 1px solid var(--line); border-radius: 8px; }
+  .latent-filter legend { padding: 0 .25rem; font-weight: 650; }
+  .latent-options { display: grid; grid-template-columns: 1fr 1fr; gap: .3rem; }
+  .latent-options label { margin: .2rem 0 0; font-weight: 500; }
+  .latent-options input { padding: .3rem .4rem; }
+  #open-latents { margin-top: .5rem; font-size: .85rem; }
+  .hint, .count, .meta, .file-status { font-size: .86rem; color: var(--muted); }
+  .review {
+    display: flex; align-items: center; flex-wrap: wrap; gap: .65rem 1rem;
+    padding: .7rem 1rem; background: #f6f7fb; border-bottom: 1px solid var(--line);
+  }
+  .score-buttons { display: flex; flex-wrap: wrap; gap: .38rem; }
+  .score-buttons button { min-width: 2.65rem; padding: .38rem .55rem; font-weight: 700; }
+  .score-buttons [aria-pressed="true"] { background: var(--accent); }
+  .review-status { font-size: .86rem; color: var(--muted); }
+  .reviewer-form { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; padding: .7rem 1rem; border-bottom: 1px solid var(--line); }
+  .reviewer-form input { width: min(14rem, 100%); }
+  .other-scores-toggle { display: inline-flex; align-items: center; gap: .35rem; font-size: .87rem; }
+  .other-scores-toggle input { width: auto; accent-color: var(--ink); }
+  .other-scores { margin: 0; padding: .6rem 1rem .6rem 2.2rem; border-bottom: 1px solid var(--line); }
+  .other-scores li { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .notes-form { display: grid; gap: .35rem; flex-basis: 100%; }
+  .notes-form textarea {
+    width: 100%; min-height: 4rem; resize: vertical; padding: .5rem .65rem;
+    font: inherit; color: var(--ink); border: 1px solid var(--line); border-radius: 8px;
+  }
+  .notes-form button { justify-self: start; }
+  .latent-panel { padding: .6rem 1rem; border-bottom: 1px solid var(--line); }
+  .latent-panel summary { cursor: pointer; font-weight: 650; }
+  .latent-panel table { margin-top: .5rem; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  .latent-panel th, .latent-panel td { padding: .2rem .65rem; text-align: right; border-bottom: 1px solid var(--line); }
+  .latent-panel th:first-child, .latent-panel td:first-child { padding-left: .2rem; text-align: left; }
+  .list-navigation { display: flex; justify-content: space-between; align-items: center; gap: .3rem; margin-top: .5rem; }
+  .list-navigation button { padding: .2rem .45rem; }
+  .hint { margin-top: .45rem; overflow-wrap: anywhere; }
+  .list-head {
+    display: flex; align-items: center; justify-content: space-between; gap: .5rem;
+    margin: .9rem 0 .5rem; padding-top: .8rem; border-top: 1px solid var(--line);
+  }
+  .list-head button { font-size: .8rem; padding: .25rem .45rem; }
+  .targets { display: grid; gap: .35rem; max-height: min(45vh, 28rem); overflow: auto; padding: 3px; }
+  .target {
+    text-align: left; width: 100%; display: flex; flex-wrap: wrap; align-items: baseline;
+    justify-content: space-between; gap: .15rem .5rem;
+  }
+  .id, .target span { font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+  .target small { color: var(--muted); }
+  button[aria-pressed="true"] { background: var(--wash); border-color: var(--accent); color: #202c59; }
+  .viewer-head {
+    display: flex; gap: .8rem; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; border-bottom: 1px solid var(--line); padding: .85rem 1rem;
+  }
+  .viewer-head h2 { font-size: clamp(1.02rem, 2vw, 1.3rem); overflow-wrap: anywhere; }
+  .observations { display: flex; flex-wrap: wrap; gap: .4rem; padding: .75rem 1rem; border-bottom: 1px solid var(--line); }
+  .observations button { font-size: .84rem; font-variant-numeric: tabular-nums; }
+  [hidden] { display: none !important; }
+  .plot-area {
+    overflow: auto; max-height: 75vh; background: white;
+    border-radius: 0 0 13px 13px;
+  }
+  .plot-area img { display: block; width: 100%; height: auto; }
+  .plot-area img.full-size { width: auto; max-width: none; }
+  .empty { padding: clamp(2rem, 9vw, 7rem) 1rem; text-align: center; color: var(--muted); }
+  .empty h2 { font-size: 1.5rem; color: var(--ink); margin-bottom: .35rem; }
+  .file-status { padding: .7rem clamp(1rem, 3vw, 2.5rem) 0; max-width: 2000px; margin: auto; }
+  @media (max-width: 760px) {
+    .workspace { grid-template-columns: minmax(0, 1fr); }
+    .targets { max-height: 10rem; }
+    .plot-area { max-height: 68vh; }
+  }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><strong>quassiQ</strong><h1>Visual inspection</h1></div>
+  <div class="actions">
+    <button id="open-plots" type="button">Open plots folder</button>
+    <button id="open-catalog" type="button">Load redshift CSV</button>
+    <button id="export-scores" type="button" class="primary" disabled>Export scores</button>
+    <input id="plot-folder" type="file" webkitdirectory multiple hidden>
+    <input id="catalog-file" type="file" accept=".csv,text/csv" hidden>
+  </div>
+</header>
+<p class="file-status" id="folder-status" role="status">Choose a target folder or the parent folder containing multiple targets.</p>
+<main class="workspace">
+  <aside class="card sidebar" aria-label="Target filters">
+    <h2>Targets</h2>
+    <label for="search">Search TARGETID</label>
+    <input id="search" type="search" inputmode="numeric" placeholder="Type a target ID" autocomplete="off">
+    <div class="range">
+      <div><label for="min-z">Min redshift</label><input id="min-z" type="number" step="any" placeholder="Any" disabled></div>
+      <div><label for="max-z">Max redshift</label><input id="max-z" type="number" step="any" placeholder="Any" disabled></div>
+    </div>
+    <p class="hint" id="catalog-status" role="status">Load a CSV with TARGETID and Z to filter by redshift.</p>
+    <fieldset class="latent-filter">
+      <legend>Latent spread</legend>
+      <div id="latent-options" class="latent-options"></div>
+      <label for="spread-mode">Match cutoffs</label>
+      <select id="spread-mode" disabled>
+        <option value="any">Any entered cutoff</option>
+        <option value="all">All entered cutoffs</option>
+      </select>
+      <p class="hint" id="latent-filter-status" role="status">Load latent_spreads.csv to enable filtering.</p>
+      <button id="open-latents" type="button">Load latent spreads CSV</button>
+      <input id="latent-file" type="file" accept=".csv,text/csv" hidden>
+    </fieldset>
+    <div class="list-head">
+      <span id="target-count" class="count" aria-live="polite">0 targets</span>
+      <button id="clear" type="button" disabled>Clear filters</button>
+    </div>
+    <div id="targets" class="targets" aria-label="Matching targets"></div>
+    <div id="list-navigation" class="list-navigation" hidden>
+      <button id="previous-page" type="button" aria-label="Previous target list page">‹</button>
+      <span id="list-page" class="count"></span>
+      <button id="next-page" type="button" aria-label="Next target list page">›</button>
+    </div>
+  </aside>
+  <section class="card" aria-label="Spectrum viewer">
+    <div class="viewer-head">
+      <div>
+        <h2 id="title">Spectrum viewer</h2>
+        <p id="target-meta" class="meta" hidden></p>
+      </div>
+      <div class="viewer-tools">
+        <div class="navigation" aria-label="Target navigation">
+          <button id="previous" type="button" disabled>← Previous</button>
+          <button id="next" type="button" disabled>Next →</button>
+        </div>
+        <button id="zoom" type="button" disabled>Actual size</button>
+      </div>
+    </div>
+    <form id="reviewer-form" class="reviewer-form">
+      <label for="reviewer-name"><strong>Reviewer</strong></label>
+      <input id="reviewer-name" type="text" maxlength="80" placeholder="Your name" required>
+      <button type="submit">Use name</button>
+      <span id="score-mode" class="review-status" role="status"></span>
+      <button id="export-previous-scores" type="button" hidden>Export previous browser scores</button>
+    </form>
+    <div class="review" id="review" hidden>
+      <strong id="score-label">Your target score</strong>
+      <div class="score-buttons" id="score-buttons" role="group" aria-labelledby="score-label">
+        <button type="button" data-score="1" aria-pressed="false">1</button>
+        <button type="button" data-score="2" aria-pressed="false">2</button>
+        <button type="button" data-score="3" aria-pressed="false">3</button>
+        <button type="button" data-score="4" aria-pressed="false">4</button>
+        <button type="button" data-score="5" aria-pressed="false">5</button>
+      </div>
+      <button id="clear-score" type="button" hidden>Clear score</button>
+      <span id="review-status" class="review-status" role="status"></span>
+      <label class="other-scores-toggle"><input id="show-other-scores" type="checkbox" disabled>Show other reviewers’ scores</label>
+      <div class="notes-form">
+        <label for="review-notes">Your notes</label>
+        <textarea id="review-notes" maxlength="1500" rows="2" placeholder="What influenced your score?"></textarea>
+        <button id="save-note" type="button" disabled>Save note</button>
+      </div>
+    </div>
+    <ul id="other-scores" class="other-scores" aria-live="polite" hidden></ul>
+    <details id="latent-panel" class="latent-panel" hidden>
+      <summary>Latent spreads across epochs</summary>
+      <table>
+        <thead><tr><th scope="col">Latent</th><th scope="col">Min</th><th scope="col">Max</th><th scope="col">Max difference</th></tr></thead>
+        <tbody id="latent-rows"></tbody>
+      </table>
+    </details>
+    <div class="observations" id="observations" aria-label="Observation plots" hidden></div>
+    <div class="empty" id="empty">
+      <h2 id="empty-title">Open a plots folder</h2>
+      <p id="empty-detail">The selected PNG will appear here.</p>
+    </div>
+    <div class="plot-area" id="plot-area" hidden>
+      <img id="plot" alt="">
+    </div>
+  </section>
+</main>
+<script>
+  const byId = (id) => document.getElementById(id);
+  const plotFolder = byId("plot-folder");
+  const catalogFile = byId("catalog-file");
+  const search = byId("search");
+  const minZ = byId("min-z");
+  const maxZ = byId("max-z");
+  const latentOptions = byId("latent-options");
+  const spreadMode = byId("spread-mode");
+  let cutoffFields = new Map();
+  const latentFile = byId("latent-file");
+  const targetList = byId("targets");
+  const observations = byId("observations");
+  const plotArea = byId("plot-area");
+  const plot = byId("plot");
+  const zoom = byId("zoom");
+
+  const pageSize = 100;
+  const scoreKey = "quassiQ.visualInspection.scores.v1:" + location.pathname.replace(/index\.html$/, "");
+  const scoreButtons = Array.from(byId("score-buttons").querySelectorAll("button"));
+  const profilePrefix = scoreKey + ":reviewer:";
+  const reviewerKey = scoreKey + ":activeReviewer";
+  const defaultReviewer = "My scores";
+  const showOthers = byId("show-other-scores");
+  const reviewNotes = byId("review-notes");
+  const saveNote = byId("save-note");
+  const noteDrafts = new Map();
+  let reviewer = "";
+  let scores = new Map();
+  let reviewerReady = false;
+  let scoringReady = false;
+  let sharedScores = false;
+  let savingScore = false;
+  let reviewerRequest = 0;
+  let othersRequest = 0;
+  let latentByTarget = new Map();
+  let selectedObservation = "";
+  let plotSourceChanged = false;
+
+  let plotsByTarget = new Map();
+  let redshiftByTarget = new Map();
+  let visibleIds = [];
+  let selectedId = "";
+  let selectedFile = null;
+  let plotUrl = "";
+  let fullSize = false;
+  let catalogLoad = 0;
+  let latentLoad = 0;
+
+  function getBrowserValue(key) {
+    try { return localStorage.getItem(key); } catch { return null; }
+  }
+
+  function readBrowserScores(name) {
+    try {
+      const saved = getBrowserValue(profilePrefix + name.toLowerCase());
+      const legacy = name.toLowerCase() === defaultReviewer.toLowerCase() ? getBrowserValue(scoreKey) : null;
+      return new Map(Object.entries(saved ? JSON.parse(saved).scores : JSON.parse(legacy ?? "{}")));
+    } catch {
+      return new Map();
+    }
+  }
+
+  async function scoreRequest(params, payload) {
+    const query = params ? "?" + new URLSearchParams(params) : "";
+    const options = payload ? {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload),
+    } : {cache: "no-store"};
+    const response = await fetch("./api/scores" + query, options);
+    if (!response.ok) throw new Error("The score server did not complete the request.");
+    return response.json();
+  }
+
+  async function setupScoring() {
+    const mode = byId("score-mode");
+    if (location.protocol !== "file:") {
+      try {
+        const response = await fetch("./api/scores", {cache: "no-store"});
+        if (response.ok) sharedScores = (await response.json()).shared === true;
+        else if (response.status !== 404) throw new Error();
+      } catch {
+        mode.textContent = "Score server unavailable. Reload to reconnect.";
+        return;
+      }
+    }
+    scoringReady = true;
+    mode.textContent = sharedScores ? "Shared scores" : "Scores saved in this browser only";
+    byId("export-previous-scores").hidden = !sharedScores || !readBrowserScores(defaultReviewer).size;
+    const name = getBrowserValue(reviewerKey) || (sharedScores ? "" : defaultReviewer);
+    if (name) await selectReviewer(name);
+    else renderScore();
+  }
+
+  async function selectReviewer(name) {
+    if (!scoringReady || !name.trim()) return;
+    reviewer = name.trim();
+    byId("reviewer-name").value = reviewer;
+    try { localStorage.setItem(reviewerKey, reviewer); } catch { /* Scores can still be saved on the server. */ }
+    showOthers.checked = false;
+    reviewerReady = false;
+    scores = new Map();
+    renderScore("Loading your reviews…");
+    renderTargets();
+    refreshOtherScores();
+    const request = ++reviewerRequest;
+    try {
+      const loaded = sharedScores
+        ? new Map(Object.entries((await scoreRequest({reviewer})).scores)) : readBrowserScores(reviewer);
+      if (request !== reviewerRequest) return;
+      scores = loaded;
+      reviewerReady = true;
+      renderScore();
+      renderTargets();
+    } catch (error) {
+      if (request === reviewerRequest) renderScore(error.message + " Select your name again to retry.");
+    }
+  }
+
+  function noteDraftKey() {
+    return JSON.stringify([reviewer.toLowerCase(), selectedId]);
+  }
+
+  function renderScore(message = "") {
+    const entry = scores.get(selectedId);
+    const enabled = reviewerReady && Boolean(selectedId) && !savingScore;
+    byId("score-label").textContent = reviewerReady ? "Score · " + reviewer : "Your target score";
+    for (const control of scoreButtons) {
+      control.disabled = !enabled;
+      control.setAttribute("aria-pressed", String(Number(control.dataset.score) === entry?.score));
+    }
+    byId("clear-score").hidden = entry?.score == null;
+    byId("clear-score").disabled = !enabled;
+    byId("export-scores").disabled = !reviewerReady || !scores.size;
+    showOthers.disabled = !reviewerReady || !selectedId;
+    reviewNotes.disabled = !enabled;
+    reviewNotes.value = noteDrafts.get(noteDraftKey()) ?? entry?.notes ?? "";
+    saveNote.disabled = !enabled || reviewNotes.value.trim() === (entry?.notes ?? "");
+    byId("review-status").textContent = message || (!reviewerReady ? "Choose your reviewer name to begin."
+      : entry ? (sharedScores ? "Saved to shared database" : "Saved in this browser") : "Unscored");
+  }
+
+  async function updateReview(score, scoringCurrentObservation = false) {
+    if (!reviewerReady || !selectedId || savingScore) return;
+    const id = selectedId;
+    const name = reviewer;
+    const key = noteDraftKey();
+    const notes = reviewNotes.value.trim();
+    const observation = scoringCurrentObservation
+      ? selectedObservation : scores.get(id)?.observation || selectedObservation;
+    const request = reviewerRequest;
+    let entry = score !== null || notes ? {score, observation, notes, reviewedAt: new Date().toISOString()} : null;
+    savingScore = true;
+    renderScore("Saving…");
+    try {
+      if (sharedScores) {
+        ({entry} = await scoreRequest(null, {reviewer: name, targetId: id, score, observation, notes}));
+      } else {
+        const updated = readBrowserScores(name);
+        if (entry) updated.set(id, entry);
+        else updated.delete(id);
+        localStorage.setItem(profilePrefix + name.toLowerCase(), JSON.stringify({reviewer: name, scores: Object.fromEntries(updated)}));
+      }
+      noteDrafts.delete(key);
+      if (request !== reviewerRequest) return;
+      if (entry) scores.set(id, entry);
+      else scores.delete(id);
+      renderTargets();
+    } catch {
+      if (request === reviewerRequest) {
+        savingScore = false;
+        renderScore("Could not save your review. Try again.");
+      }
+      return;
+    } finally {
+      if (savingScore) {
+        savingScore = false;
+        renderScore();
+      }
+    }
+  }
+
+  function browserOtherScores(id) {
+    const others = [];
+    for (const key of Object.keys(localStorage)) {
+      if (!key.startsWith(profilePrefix)) continue;
+      const profile = JSON.parse(localStorage.getItem(key));
+      const entry = profile.scores[id];
+      if (entry && profile.reviewer.toLowerCase() !== reviewer.toLowerCase()) {
+        others.push({...entry, reviewer: profile.reviewer});
+      }
+    }
+    const legacy = defaultReviewer.toLowerCase();
+    if (reviewer.toLowerCase() !== legacy && !getBrowserValue(profilePrefix + legacy)) {
+      const entry = readBrowserScores(defaultReviewer).get(id);
+      if (entry) others.push({...entry, reviewer: defaultReviewer});
+    }
+    return others;
+  }
+
+  async function refreshOtherScores() {
+    const request = ++othersRequest;
+    const list = byId("other-scores");
+    list.hidden = !(reviewerReady && selectedId && showOthers.checked);
+    list.replaceChildren();
+    if (list.hidden) return;
+    function addLine(text) {
+      const line = document.createElement("li");
+      line.textContent = text;
+      list.append(line);
+    }
+    addLine("Loading reviews…");
+    try {
+      const others = sharedScores
+        ? (await scoreRequest({reviewer, target: selectedId})).others : browserOtherScores(selectedId);
+      if (request !== othersRequest) return;
+      list.replaceChildren();
+      if (!others.length) addLine("No other reviews for this target.");
+      for (const entry of others) {
+        addLine(entry.reviewer + (entry.score == null ? "" : " · " + entry.score + "/5")
+          + (entry.notes ? "\n" + entry.notes : ""));
+      }
+    } catch {
+      if (request === othersRequest) {
+        list.replaceChildren();
+        addLine("Could not load other reviews. Toggle visibility to retry.");
+      }
+    }
+  }
+
+  function exportScores(entries, name) {
+    const rows = [["TARGETID", "Score", "Observation", "ReviewedAt", "Reviewer", "Notes"]];
+    for (const [id, entry] of entries) {
+      rows.push([id, entry.score, entry.observation, entry.reviewedAt, name, entry.notes]);
+    }
+    function csvCell(value) {
+      let text = String(value ?? "");
+      if (/^\s*[=+@-]/.test(text)) text = "'" + text;
+      return /[",\r\n]/.test(text) ? '"' + text.replaceAll('"', '""') + '"' : text;
+    }
+    const csv = rows.map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
+    const url = URL.createObjectURL(new Blob([csv], {type: "text/csv;charset=utf-8"}));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "quassiq-vi-scores.csv";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function renderLatents() {
+    const ranges = Object.entries(latentByTarget.get(selectedId) ?? {});
+    const rows = document.createDocumentFragment();
+    for (const [name, [low, high, spread = high - low]] of ranges) {
+      const row = document.createElement("tr");
+      const label = document.createElement("th");
+      label.scope = "row";
+      label.textContent = "Latent " + name.slice(6);
+      row.append(label);
+      for (const value of [low, high, spread]) {
+        const cell = document.createElement("td");
+        cell.textContent = Number.isFinite(value) ? Number(value.toPrecision(5)).toString() : "—";
+        row.append(cell);
+      }
+      rows.append(row);
+    }
+    byId("latent-rows").replaceChildren(rows);
+    byId("latent-panel").hidden = !ranges.length;
+  }
+
+  function setLatentData(latents) {
+    latentByTarget = latents;
+    const oldFields = cutoffFields;
+    cutoffFields = new Map();
+    const names = new Set();
+    for (const ranges of latents.values()) {
+      for (const name of Object.keys(ranges ?? {})) names.add(name);
+    }
+    latentOptions.replaceChildren();
+    for (const name of Array.from(names).sort((a, b) => Number(a.slice(6)) - Number(b.slice(6)))) {
+      const label = document.createElement("label");
+      const control = document.createElement("input");
+      control.type = "number";
+      control.min = "0";
+      control.step = "any";
+      control.placeholder = "Off";
+      control.value = oldFields.get(name)?.value ?? "";
+      label.append(document.createTextNode("Latent " + name.slice(6)), control);
+      latentOptions.append(label);
+      cutoffFields.set(name, control);
+    }
+    spreadMode.disabled = !names.size;
+  }
+
+  async function loadDataset() {
+    if (location.protocol === "file:") {
+      byId("folder-status").textContent = "Use the dataset builder with --serve for automatic loading, or open a plots folder.";
+      return;
+    }
+    byId("folder-status").textContent = "Loading target dataset…";
+    try {
+      const response = await fetch("./dataset.json");
+      if (!response.ok) throw new Error("Could not load dataset.json");
+      const dataset = await response.json();
+      if (dataset.version !== 1 || !dataset.targets) throw new Error("Unsupported dataset format");
+      const plotBase = new URL(dataset.plotBase, response.url);
+      const indexedPlots = new Map();
+      const redshifts = new Map();
+      const latents = new Map();
+      for (const [id, target] of Object.entries(dataset.targets)) {
+        const files = new Map(Object.entries(target.plots).map(([key, path]) => [key, new URL(path, plotBase).href]));
+        if (!files.size) continue;
+        indexedPlots.set(id, files);
+        if (Number.isFinite(target.z)) redshifts.set(id, target.z);
+        latents.set(id, target.latents);
+      }
+      if (!plotSourceChanged) {
+        plotsByTarget = indexedPlots;
+        byId("folder-status").textContent = indexedPlots.size.toLocaleString() + " targets loaded automatically";
+      }
+      if (!latentLoad) setLatentData(latents);
+      if (!catalogLoad) {
+        redshiftByTarget = redshifts;
+        minZ.disabled = maxZ.disabled = !redshifts.size;
+        byId("catalog-status").textContent = redshifts.size.toLocaleString() + " catalog redshifts";
+      }
+      updateFilters();
+    } catch {
+      if (!plotSourceChanged) {
+        byId("folder-status").textContent = "No hosted dataset loaded. Open a plots folder or check that dataset.json is beside index.html.";
+      }
+    }
+  }
+
+  // Keep TARGETID as a string so all digits survive the CSV join.
+  function indexPlots(files) {
+    const index = new Map();
+    for (const file of files) {
+      const match = file.name.match(/^(\d+)_obs_(all_obs|\d{8}(?:_\d{8})?)\.png$/i);
+      if (!match) continue;
+      const [, id, observation] = match;
+      if (!index.has(id)) index.set(id, new Map());
+      index.get(id).set(observation.toLowerCase(), file);
+    }
+    return index;
+  }
+
+  // Match complete CSV fields, including quoted commas, newlines and escaped quotes.
+  function* csvRows(text) {
+    const fields = /(?:,|\r\n|\n|\r)(?:"((?:[^"]|"")*)"|([^",\r\n]*))/g;
+    const source = "\n" + text.replace(/^\uFEFF/, "");
+    let row = [];
+    for (const match of source.matchAll(fields)) {
+      if (match[0].startsWith("\n") || match[0].startsWith("\r")) {
+        if (row.some(Boolean)) yield row;
+        row = [];
+      }
+      row.push((match[1]?.replaceAll('""', '"') ?? match[2]).trim());
+    }
+    if (row.some(Boolean)) yield row;
+  }
+
+  function readRedshifts(text) {
+    const rows = csvRows(text);
+    const headings = rows.next().value?.map((value) => value.toUpperCase()) ?? [];
+    const idColumn = headings.indexOf("TARGETID");
+    const zColumn = headings.indexOf("Z");
+    if (idColumn === -1 || zColumn === -1) throw new Error("The CSV needs TARGETID and Z columns.");
+    const result = new Map();
+    for (const row of rows) {
+      const id = row[idColumn];
+      const z = Number(row[zColumn]);
+      if (/^\d+$/.test(id ?? "") && row[zColumn] && Number.isFinite(z) && !result.has(id)) {
+        result.set(id, z);
+      }
+    }
+    if (!result.size) throw new Error("The CSV contains no valid target redshifts.");
+    return result;
+  }
+
+  function readLatentSpreads(text) {
+    const rows = csvRows(text);
+    const headings = rows.next().value?.map((value) => value.toLowerCase()) ?? [];
+    const idColumn = headings.indexOf("targetid");
+    const columns = headings.flatMap((name, index) => /^latent\d+$/.test(name) ? [[name, index]] : []);
+    if (idColumn === -1 || !columns.length) throw new Error("The spread CSV needs TARGETID and Latent columns.");
+    const result = new Map();
+    for (const row of rows) {
+      const id = row[idColumn];
+      if (!/^\d+$/.test(id ?? "")) continue;
+      const ranges = {};
+      for (const [name, index] of columns) {
+        const spread = Number(row[index]);
+        if (row[index] && Number.isFinite(spread) && spread >= 0) ranges[name] = [null, null, spread];
+      }
+      if (Object.keys(ranges).length) result.set(id, ranges);
+    }
+    if (!result.size) throw new Error("The CSV contains no valid latent spreads.");
+    return result;
+  }
+
+  function observationLabel(key) {
+    if (key === "all_obs") return "All observations";
+    return key.split("_").map((date) => (
+      [date.slice(0, 4), date.slice(4, 6), date.slice(6, 8)].join("-")
+    )).join(" ↔ ");
+  }
+
+  function button(label, isSelected, onClick) {
+    const element = document.createElement("button");
+    element.type = "button";
+    element.textContent = label;
+    element.setAttribute("aria-pressed", String(isSelected));
+    element.addEventListener("click", onClick);
+    return element;
+  }
+
+  function showEmpty(title, detail) {
+    byId("empty-title").textContent = title;
+    byId("empty-detail").textContent = detail;
+    byId("empty").hidden = false;
+    plotArea.hidden = true;
+  }
+
+  function clearPlot() {
+    if (plotUrl) URL.revokeObjectURL(plotUrl);
+    plotUrl = "";
+    selectedFile = null;
+    plot.removeAttribute("src");
+  }
+
+  function showPlot(file, label) {
+    if (file === selectedFile) return;
+    clearPlot();
+    selectedFile = file;
+    if (typeof file !== "string") plotUrl = URL.createObjectURL(file);
+    plot.alt = "Spectrum for " + selectedId + ", " + label;
+    plot.src = plotUrl || file;
+    byId("empty").hidden = true;
+    plotArea.hidden = false;
+    plotArea.scrollTo(0, 0);
+  }
+
+  function renderViewer() {
+    const position = visibleIds.indexOf(selectedId);
+    const targetPlots = plotsByTarget.get(selectedId);
+    byId("previous").disabled = position <= 0;
+    byId("next").disabled = position < 0 || position >= visibleIds.length - 1;
+    zoom.disabled = !targetPlots;
+    byId("review").hidden = !targetPlots;
+    renderScore();
+    refreshOtherScores();
+    renderLatents();
+    observations.hidden = !targetPlots;
+    observations.replaceChildren();
+
+    byId("title").textContent = selectedId || "Spectrum viewer";
+    byId("title").classList.toggle("id", Boolean(selectedId));
+    const meta = byId("target-meta");
+    meta.hidden = !targetPlots;
+    if (!targetPlots) {
+      selectedObservation = "";
+      clearPlot();
+      if (plotsByTarget.size) {
+        showEmpty("No matching targets", "Change or clear your filters.");
+      } else {
+        showEmpty("Open a plots folder", "The selected PNG will appear here.");
+      }
+      return;
+    }
+
+    const keys = Array.from(targetPlots.keys()).sort();
+    if (targetPlots.has("all_obs")) {
+      keys.splice(keys.indexOf("all_obs"), 1);
+      keys.unshift("all_obs");
+    }
+    const z = redshiftByTarget.get(selectedId);
+    const zLabel = z === undefined ? "—" : String(z);
+    meta.textContent = "z = " + zLabel + "  ·  " + keys.length + (keys.length === 1 ? " plot" : " plots");
+
+    const activeKey = keys.find((key) => targetPlots.get(key) === selectedFile) ?? keys[0];
+    selectedObservation = activeKey;
+    for (const key of keys) {
+      const label = observationLabel(key);
+      const tab = button(label, key === activeKey, () => {
+        selectedObservation = key;
+        showPlot(targetPlots.get(key), label);
+        for (const other of observations.children) {
+          other.setAttribute("aria-pressed", String(other === tab));
+        }
+      });
+      observations.append(tab);
+    }
+    showPlot(targetPlots.get(activeKey), observationLabel(activeKey));
+  }
+
+  function renderTargets() {
+    const listTop = targetList.scrollTop;
+    const items = document.createDocumentFragment();
+    const start = Math.max(0, Math.floor(visibleIds.indexOf(selectedId) / pageSize) * pageSize);
+    const end = Math.min(start + pageSize, visibleIds.length);
+    byId("list-navigation").hidden = visibleIds.length <= pageSize;
+    byId("list-page").textContent = (start + 1) + "–" + end;
+    byId("previous-page").disabled = start === 0;
+    byId("next-page").disabled = end >= visibleIds.length;
+    for (const id of visibleIds.slice(start, end)) {
+      const element = button("", id === selectedId, () => selectTarget(id, true));
+      element.className = "target";
+      const name = document.createElement("span");
+      name.textContent = id;
+      element.append(name);
+      if (redshiftByTarget.has(id)) {
+        const value = document.createElement("small");
+        value.textContent = "z = " + redshiftByTarget.get(id);
+        element.append(value);
+      }
+      const score = document.createElement("small");
+      score.className = "target-score";
+      if (scores.get(id)?.score != null) score.textContent = "Score " + scores.get(id).score;
+      element.append(score);
+      items.append(element);
+    }
+    targetList.replaceChildren(items);
+    targetList.scrollTop = listTop;
+  }
+
+  function selectTarget(id, focus = false) {
+    selectedId = id;
+    renderTargets();
+    renderViewer();
+    const activeButton = targetList.querySelector('[aria-pressed="true"]');
+    if (activeButton) {
+      if (focus) activeButton.focus({ preventScroll: true });
+      const bounds = targetList.getBoundingClientRect();
+      const item = activeButton.getBoundingClientRect();
+      if (item.top < bounds.top) targetList.scrollTop += item.top - bounds.top;
+      if (item.bottom > bounds.bottom) targetList.scrollTop += item.bottom - bounds.bottom;
+    }
+  }
+
+  function updateFilters() {
+    const query = search.value.trim();
+    const min = minZ.value === "" ? -Infinity : minZ.valueAsNumber;
+    const max = maxZ.value === "" ? Infinity : maxZ.valueAsNumber;
+    const hasRange = minZ.value !== "" || maxZ.value !== "";
+    const invalidRedshift = minZ.validity.badInput || maxZ.validity.badInput || min > max;
+    const cuts = [];
+    let invalidSpread = false;
+    for (const [name, input] of cutoffFields) {
+      const cutoff = input.valueAsNumber;
+      const invalid = input.validity.badInput || (input.value !== "" && (!Number.isFinite(cutoff) || cutoff < 0));
+      input.setAttribute("aria-invalid", String(invalid));
+      invalidSpread ||= invalid;
+      if (input.value !== "" && !invalid) cuts.push([name, cutoff]);
+    }
+    minZ.setAttribute("aria-invalid", String(invalidRedshift));
+    maxZ.setAttribute("aria-invalid", String(invalidRedshift));
+    if (!spreadMode.disabled) {
+      byId("latent-filter-status").textContent = invalidSpread
+        ? "Enter cutoffs of 0 or higher."
+        : "Enter a cutoff for each latent you want to use. Spread must be greater than its cutoff.";
+    }
+    visibleIds = invalidRedshift || invalidSpread ? [] : Array.from(plotsByTarget.keys()).filter((id) => {
+      const z = redshiftByTarget.get(id);
+      const matchesRedshift = !hasRange || (z !== undefined && z >= min && z <= max);
+      if (!id.includes(query) || !matchesRedshift) return false;
+      if (!cuts.length) return true;
+      const ranges = latentByTarget.get(id);
+      const exceedsCutoff = ([name, cutoff]) => {
+        const range = ranges?.[name];
+        const spread = range?.[2] ?? (range ? range[1] - range[0] : NaN);
+        return Number.isFinite(spread) && spread > cutoff;
+      };
+      return spreadMode.value === "all" ? cuts.every(exceedsCutoff) : cuts.some(exceedsCutoff);
+    }).sort();
+    byId("target-count").textContent = invalidRedshift ? "Check redshift range"
+      : invalidSpread ? "Check spread cutoff" : visibleIds.length + " of " + plotsByTarget.size + " targets";
+    byId("clear").disabled = !(query || hasRange || invalidRedshift || invalidSpread || cuts.length || spreadMode.value === "all");
+    const nextId = visibleIds.includes(selectedId) ? selectedId : visibleIds[0] ?? "";
+    selectTarget(nextId);
+  }
+
+  byId("open-plots").addEventListener("click", () => plotFolder.click());
+  byId("open-catalog").addEventListener("click", () => catalogFile.click());
+  byId("open-latents").addEventListener("click", () => latentFile.click());
+
+  plotFolder.addEventListener("change", () => {
+    if (!plotFolder.files.length) return;
+    plotSourceChanged = true;
+    plotsByTarget = indexPlots(plotFolder.files);
+    const count = Array.from(plotsByTarget.values()).reduce((total, group) => total + group.size, 0);
+    byId("folder-status").textContent = count
+      ? count + " PNGs loaded from the selected folder."
+      : "No matching PNGs found. Choose a folder with files named TARGETID_obs_DATE_DATE.png.";
+    updateFilters();
+    plotFolder.value = "";
+  });
+
+  catalogFile.addEventListener("change", async () => {
+    const file = catalogFile.files[0];
+    if (!file) return;
+    catalogFile.value = "";
+    const load = ++catalogLoad;
+    const status = byId("catalog-status");
+    try {
+      const catalog = readRedshifts(await file.text());
+      if (load !== catalogLoad) return;
+      redshiftByTarget = catalog;
+      minZ.disabled = false;
+      maxZ.disabled = false;
+      status.textContent = file.name + " · " + catalog.size.toLocaleString() + " redshifts";
+      updateFilters();
+    } catch (error) {
+      if (load === catalogLoad) status.textContent = error.message;
+    }
+  });
+
+  latentFile.addEventListener("change", async () => {
+    const file = latentFile.files[0];
+    if (!file) return;
+    latentFile.value = "";
+    const load = ++latentLoad;
+    try {
+      const latents = readLatentSpreads(await file.text());
+      if (load !== latentLoad) return;
+      setLatentData(latents);
+      updateFilters();
+    } catch (error) {
+      if (load === latentLoad) byId("latent-filter-status").textContent = error.message;
+    }
+  });
+
+  for (const input of [search, minZ, maxZ]) {
+    input.addEventListener("input", updateFilters);
+  }
+  latentOptions.addEventListener("input", updateFilters);
+  spreadMode.addEventListener("change", updateFilters);
+  byId("clear").addEventListener("click", () => {
+    search.value = minZ.value = maxZ.value = "";
+    spreadMode.value = "any";
+    for (const input of cutoffFields.values()) input.value = "";
+    updateFilters();
+  });
+  byId("previous").addEventListener("click", () => selectTarget(visibleIds[visibleIds.indexOf(selectedId) - 1]));
+  byId("next").addEventListener("click", () => selectTarget(visibleIds[visibleIds.indexOf(selectedId) + 1]));
+
+  byId("previous-page").addEventListener("click", () => {
+    const start = Math.floor(visibleIds.indexOf(selectedId) / pageSize) * pageSize;
+    selectTarget(visibleIds[start - pageSize]);
+  });
+  byId("next-page").addEventListener("click", () => {
+    const start = Math.floor(visibleIds.indexOf(selectedId) / pageSize) * pageSize;
+    selectTarget(visibleIds[start + pageSize]);
+  });
+  byId("reviewer-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    selectReviewer(byId("reviewer-name").value);
+  });
+  for (const control of scoreButtons) {
+    control.addEventListener("click", () => updateReview(Number(control.dataset.score), true));
+  }
+  byId("clear-score").addEventListener("click", () => updateReview(null));
+  showOthers.addEventListener("change", refreshOtherScores);
+  reviewNotes.addEventListener("input", () => {
+    noteDrafts.set(noteDraftKey(), reviewNotes.value);
+    saveNote.disabled = reviewNotes.value.trim() === (scores.get(selectedId)?.notes ?? "");
+    byId("review-status").textContent = saveNote.disabled ? "No changes" : "Unsaved note";
+  });
+  saveNote.addEventListener("click", () => updateReview(scores.get(selectedId)?.score ?? null));
+  byId("export-scores").addEventListener("click", () => exportScores(scores, reviewer));
+  byId("export-previous-scores").addEventListener("click", () => exportScores(readBrowserScores(defaultReviewer), defaultReviewer));
+  window.addEventListener("storage", (event) => {
+    if (sharedScores || !reviewerReady || !event.key?.startsWith(scoreKey)) return;
+    scores = readBrowserScores(reviewer);
+    renderScore();
+    renderTargets();
+    refreshOtherScores();
+  });
+  renderScore();
+  setupScoring();
+  loadDataset();
+
+  zoom.addEventListener("click", () => {
+    fullSize = !fullSize;
+    plot.classList.toggle("full-size", fullSize);
+    zoom.textContent = fullSize ? "Fit to width" : "Actual size";
+    plotArea.scrollTo(0, 0);
+  });
+  plot.addEventListener("error", () => {
+    if (selectedFile) showEmpty("Could not open this plot", "Try another observation or check the PNG file.");
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (event.target.closest("input, button, textarea, select, [contenteditable]")) return;
+    const control = event.key === "ArrowLeft" ? byId("previous") : event.key === "ArrowRight" ? byId("next") : null;
+    if (control && !control.disabled) {
+      event.preventDefault();
+      control.click();
+    }
+  });
+</script>
+</body>
+</html>
