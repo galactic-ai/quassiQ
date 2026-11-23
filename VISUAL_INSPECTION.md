@@ -13,7 +13,7 @@ One person runs the viewer on Lonestar6. Each reviewer connects to that same ser
 3. In that SSH session, go to the directory containing the viewer files. Run `hostname -f` and copy the specific login-node hostname to share with reviewers. Then run the viewer command. Replace the redshift catalog path with the path to your copy of `post_chi2_calc.csv`.
 
    ```bash
-   python3 build_vi_dataset.py \
+   python3 docs/build_vi_dataset.py \
      --plots /work/10579/prisha/ls6/desi_project/plots \
      --redshift-csv /work/10579/prisha/ls6/desi_project/post_chi2_calc.csv \
      --latent-csv /work/10579/prisha/ls6/desi_project/latent_info.csv \
