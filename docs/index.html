@@ -81,6 +81,8 @@
   .latent-options label { margin: .2rem 0 0; font-weight: 500; }
   .latent-options input { padding: .3rem .4rem; }
   #open-latents { margin-top: .5rem; font-size: .85rem; }
+  .sample-form .sample-size-label { margin-top: 0; }
+  .sample-controls { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
   .hint, .count, .meta, .file-status { font-size: .86rem; color: var(--muted); }
   .review {
     display: flex; align-items: center; flex-wrap: wrap; gap: .65rem 1rem;
@@ -181,6 +183,19 @@
       <button id="open-latents" type="button">Load latent spreads CSV</button>
       <input id="latent-file" type="file" accept=".csv,text/csv" hidden>
     </fieldset>
+    <form id="sample-form" novalidate>
+      <fieldset class="latent-filter">
+        <legend>Random sample</legend>
+        <label class="sample-size-label" for="sample-size">Number of targets</label>
+        <input id="sample-size" type="number" min="1" step="1" aria-describedby="sample-error" disabled>
+        <div class="sample-controls">
+          <button id="draw-sample" type="submit" disabled>Draw sample</button>
+          <button id="clear-sample" type="button" hidden>Show all matches</button>
+          <button id="resume-sample" type="button" hidden>Resume saved sample</button>
+        </div>
+        <p id="sample-error" class="hint" role="status" hidden></p>
+      </fieldset>
+    </form>
     <div class="list-head">
       <span id="target-count" class="count" aria-live="polite">0 targets</span>
       <button id="clear" type="button" disabled>Clear filters</button>
@@ -260,6 +275,10 @@
   const spreadMode = byId("spread-mode");
   let cutoffFields = new Map();
   const latentFile = byId("latent-file");
+  const sampleSize = byId("sample-size");
+  const drawSample = byId("draw-sample");
+  const clearSample = byId("clear-sample");
+  const resumeSample = byId("resume-sample");
   const targetList = byId("targets");
   const observations = byId("observations");
   const plotArea = byId("plot-area");
@@ -290,7 +309,9 @@
 
   let plotsByTarget = new Map();
   let redshiftByTarget = new Map();
+  let matchingIds = [];
   let visibleIds = [];
+  let activeSample = null;
   let selectedId = "";
   let selectedFile = null;
   let plotUrl = "";
@@ -344,7 +365,10 @@
 
   async function selectReviewer(name) {
     if (!scoringReady || !name.trim()) return;
+    const previousReviewer = reviewer.toLowerCase();
     reviewer = name.trim();
+    if (previousReviewer !== reviewer.toLowerCase() && activeSample) showTargetList();
+    refreshResumeButton();
     byId("reviewer-name").value = reviewer;
     try { localStorage.setItem(reviewerKey, reviewer); } catch { /* Scores can still be saved on the server. */ }
     showOthers.checked = false;
@@ -777,6 +801,14 @@
 
   function selectTarget(id, focus = false) {
     selectedId = id;
+    if (activeSample && activeSample.targetId !== id) {
+      activeSample.targetId = id;
+      try {
+        localStorage.setItem(sampleStorageKey(), JSON.stringify(activeSample));
+      } catch {
+        showSampleError("This browser could not save your sample for later.");
+      }
+    }
     renderTargets();
     renderViewer();
     const activeButton = targetList.querySelector('[aria-pressed="true"]');
@@ -811,7 +843,7 @@
         ? "Enter cutoffs of 0 or higher."
         : "Enter a cutoff for each latent you want to use. Spread must be greater than its cutoff.";
     }
-    visibleIds = invalidRedshift || invalidSpread ? [] : Array.from(plotsByTarget.keys()).filter((id) => {
+    matchingIds = invalidRedshift || invalidSpread ? [] : Array.from(plotsByTarget.keys()).filter((id) => {
       const z = redshiftByTarget.get(id);
       const matchesRedshift = !hasRange || (z !== undefined && z >= min && z <= max);
       if (!id.includes(query) || !matchesRedshift) return false;
@@ -824,12 +856,110 @@
       };
       return spreadMode.value === "all" ? cuts.every(exceedsCutoff) : cuts.some(exceedsCutoff);
     }).sort();
-    byId("target-count").textContent = invalidRedshift ? "Check redshift range"
-      : invalidSpread ? "Check spread cutoff" : visibleIds.length + " of " + plotsByTarget.size + " targets";
     byId("clear").disabled = !(query || hasRange || invalidRedshift || invalidSpread || cuts.length || spreadMode.value === "all");
-    const nextId = visibleIds.includes(selectedId) ? selectedId : visibleIds[0] ?? "";
+    sampleSize.disabled = drawSample.disabled = matchingIds.length === 0;
+    sampleSize.max = String(matchingIds.length);
+    showTargetList(null, invalidRedshift ? "Check redshift range" : invalidSpread ? "Check spread cutoff" : "");
+  }
+
+  function showSampleError(message) {
+    const error = byId("sample-error");
+    error.textContent = message;
+    error.hidden = !message;
+  }
+
+  function sampleStorageKey() {
+    return scoreKey + ":sample:" + reviewer.toLowerCase();
+  }
+
+  function readSavedSample() {
+    try {
+      const sample = JSON.parse(getBrowserValue(sampleStorageKey()));
+      return Array.isArray(sample?.ids) && sample.ids.length && sample.filters ? sample : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function refreshResumeButton() {
+    resumeSample.hidden = Boolean(activeSample) || !readSavedSample();
+    resumeSample.disabled = !plotsByTarget.size;
+  }
+
+  function restoreSample() {
+    const sample = readSavedSample();
+    if (!sample || !plotsByTarget.size) return;
+    const {query, min, max, mode, cuts} = sample.filters;
+    if (((min || max) && minZ.disabled) || Object.keys(cuts).some((name) => !cutoffFields.has(name))) {
+      showSampleError("Load the redshift or latent data used for this sample, then resume it.");
+      return;
+    }
+    if (sample.ids.some((id) => !plotsByTarget.has(id))) {
+      showSampleError("Some saved targets are missing. Open the original plot dataset and try again.");
+      return;
+    }
+    search.value = query;
+    minZ.value = min;
+    maxZ.value = max;
+    spreadMode.value = mode;
+    for (const [name, input] of cutoffFields) input.value = cuts[name] ?? "";
+    sampleSize.value = String(sample.ids.length);
+    updateFilters();
+    const currentMatches = new Set(matchingIds);
+    if (sample.ids.some((id) => !currentMatches.has(id))) {
+      showSampleError("Some saved targets no longer pass the original filters. Check that the original catalog is loaded.");
+      return;
+    }
+    showTargetList(sample);
+  }
+
+  function showTargetList(sample = null, filterError = "") {
+    activeSample = sample;
+    visibleIds = sample?.ids ?? matchingIds;
+    drawSample.textContent = sample ? "Draw new sample" : "Draw sample";
+    clearSample.hidden = !sample;
+    refreshResumeButton();
+    byId("target-count").textContent = filterError || (sample
+      ? visibleIds.length + " sampled of " + matchingIds.length + " matches"
+      : matchingIds.length + " of " + plotsByTarget.size + " targets");
+    showSampleError("");
+    sampleSize.setAttribute("aria-invalid", "false");
+    const preferred = sample ? sample.targetId : selectedId;
+    const nextId = visibleIds.includes(preferred) ? preferred : visibleIds[0] ?? "";
     selectTarget(nextId);
   }
+
+  byId("sample-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!matchingIds.length) return;
+    const count = sampleSize.valueAsNumber;
+    if (!Number.isSafeInteger(count) || count < 1 || count > matchingIds.length) {
+      showSampleError("Enter a whole number from 1 to " + matchingIds.length + ".");
+      sampleSize.setAttribute("aria-invalid", "true");
+      return;
+    }
+    // Shuffle only the selected part of a copy, so no target can appear twice.
+    const pool = matchingIds.slice();
+    for (let index = 0; index < count; index++) {
+      const swap = index + Math.floor(Math.random() * (pool.length - index));
+      [pool[index], pool[swap]] = [pool[swap], pool[index]];
+    }
+    showTargetList({
+      ids: pool.slice(0, count),
+      targetId: "",
+      filters: {
+        query: search.value, min: minZ.value, max: maxZ.value, mode: spreadMode.value,
+        cuts: Object.fromEntries(Array.from(cutoffFields).filter(([, input]) => input.value)
+          .map(([name, input]) => [name, input.value])),
+      },
+    });
+  });
+  sampleSize.addEventListener("input", () => {
+    showSampleError("");
+    sampleSize.setAttribute("aria-invalid", "false");
+  });
+  clearSample.addEventListener("click", () => showTargetList());
+  resumeSample.addEventListener("click", restoreSample);
 
   byId("open-plots").addEventListener("click", () => plotFolder.click());
   byId("open-catalog").addEventListener("click", () => catalogFile.click());
@@ -928,8 +1058,9 @@
     refreshOtherScores();
   });
   renderScore();
-  setupScoring();
-  loadDataset();
+  Promise.all([setupScoring(), loadDataset()]).then(() => {
+    if (!activeSample && !plotSourceChanged) restoreSample();
+  });
 
   zoom.addEventListener("click", () => {
     fullSize = !fullSize;
