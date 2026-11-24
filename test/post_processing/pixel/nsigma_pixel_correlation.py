@@ -30,7 +30,7 @@ import pandas as pd
 
 DEFAULT_NSIGMA = Path(
     "/work/11161/kanyuni/ls6/quassiQ_project/"
-    "quassiQ/src/pipeline/N_sigma.py"
+    "quassiQ/src/pipeline/n_sigma.py"
 )
 DEFAULT_VISUAL_XLSX = Path(
     "/work/11161/kanyuni/ls6/quassiQ_project/"

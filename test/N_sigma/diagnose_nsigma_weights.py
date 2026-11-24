@@ -68,7 +68,7 @@ def weights_to_sigma(weights):
 
 
 def current_nsigma_method(high, low, weight_key):
-    """Reproduce the method currently used by N_sigma.py."""
+    """Reproduce the method currently used by n_sigma.py."""
     wave = high["wave"]
     high_flux = high["flux"]
     high_sigma = weights_to_sigma(high[weight_key])
@@ -193,7 +193,7 @@ def diagnose(target_id):
     if not paths:
         raise FileNotFoundError(f"No reconstruction FITS files found in {target_dir}")
 
-    # Match N_sigma.py: use one reconstruction per observing date.
+    # Match n_sigma.py: use one reconstruction per observing date.
     epochs_by_date = {}
     for path in paths:
         date = date_from_name(path)
