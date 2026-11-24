@@ -81,6 +81,8 @@
   .latent-options label { margin: .2rem 0 0; font-weight: 500; }
   .latent-options input { padding: .3rem .4rem; }
   #open-latents { margin-top: .5rem; font-size: .85rem; }
+  .sample-form .sample-size-label { margin-top: 0; }
+  .sample-controls { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
   .hint, .count, .meta, .file-status { font-size: .86rem; color: var(--muted); }
   .review {
     display: flex; align-items: center; flex-wrap: wrap; gap: .65rem 1rem;
@@ -88,6 +90,8 @@
   }
   .score-buttons { display: flex; flex-wrap: wrap; gap: .38rem; }
   .score-buttons button { min-width: 2.65rem; padding: .38rem .55rem; font-weight: 700; }
+  .score-buttons .half-score { background: #eef0f4; border-color: #cbd1dc; }
+  .score-buttons .half-score:hover:not(:disabled):not([aria-pressed="true"]) { background: #e1e5ed; }
   .score-buttons [aria-pressed="true"] { background: var(--accent); }
   .review-status { font-size: .86rem; color: var(--muted); }
   .reviewer-form { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; padding: .7rem 1rem; border-bottom: 1px solid var(--line); }
@@ -102,6 +106,10 @@
     font: inherit; color: var(--ink); border: 1px solid var(--line); border-radius: 8px;
   }
   .notes-form button { justify-self: start; }
+  .review-flags { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+  .review-flags button { font-size: .84rem; }
+  .review-flags button[aria-pressed="true"] { background: var(--accent); font-weight: 650; }
+  .review-flags button[data-saving] { opacity: .7; }
   .latent-panel { padding: .6rem 1rem; border-bottom: 1px solid var(--line); }
   .latent-panel summary { cursor: pointer; font-weight: 650; }
   .latent-panel table { margin-top: .5rem; border-collapse: collapse; font-variant-numeric: tabular-nums; }
@@ -140,6 +148,23 @@
   .empty { padding: clamp(2rem, 9vw, 7rem) 1rem; text-align: center; color: var(--muted); }
   .empty h2 { font-size: 1.5rem; color: var(--ink); margin-bottom: .35rem; }
   .file-status { padding: .7rem clamp(1rem, 3vw, 2.5rem) 0; max-width: 2000px; margin: auto; }
+  .view-nav { display: flex; gap: .45rem; padding: .75rem clamp(1rem, 3vw, 2.5rem) 0; max-width: 2000px; margin: auto; }
+  .view-nav button[aria-pressed="true"] { color: white; background: var(--ink); border-color: var(--ink); }
+  .analysis-panel { padding: 1rem; min-width: 0; }
+  .analysis-panel h2 { font-size: 1.25rem; }
+  .analysis-controls { display: flex; gap: .55rem .8rem; align-items: end; flex-wrap: wrap; margin: .65rem 0; }
+  .analysis-controls label { display: grid; gap: .25rem; font-weight: 650; }
+  .analysis-controls select { font-weight: 400; }
+  .analysis-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 245px), 1fr)); gap: .75rem; margin-top: .75rem; }
+  .analysis-chart { margin: 0; padding: .8rem; border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+  .analysis-chart figcaption { font-weight: 650; margin-bottom: .6rem; }
+  .score-pie { width: min(9rem, 100%); aspect-ratio: 1; border-radius: 50%; margin: .3rem auto .7rem; }
+  .chart-legend { list-style: none; margin: 0; padding: 0; font-size: .85rem; }
+  .chart-legend li { display: flex; align-items: center; gap: .45rem; }
+  .chart-swatch { width: .65rem; height: .65rem; border-radius: 2px; flex: none; }
+  .score-bar-row { display: grid; grid-template-columns: 3.5rem 1fr 2.25rem; gap: .4rem; align-items: center; font-size: .86rem; font-variant-numeric: tabular-nums; }
+  .score-bar-track { background: #eef0f4; height: .7rem; border-radius: 3px; overflow: hidden; }
+  .score-bar-fill { display: block; height: 100%; background: var(--ink); }
   @media (max-width: 760px) {
     .workspace { grid-template-columns: minmax(0, 1fr); }
     .targets { max-height: 10rem; }
@@ -153,17 +178,29 @@
   <div class="actions">
     <button id="open-plots" type="button">Open plots folder</button>
     <button id="open-catalog" type="button">Load redshift CSV</button>
+    <button id="import-scores" type="button" disabled>Import scores CSV</button>
     <button id="export-scores" type="button" class="primary" disabled>Export scores</button>
+    <button id="export-flagged" type="button" disabled>Export flagged targets</button>
     <input id="plot-folder" type="file" webkitdirectory multiple hidden>
     <input id="catalog-file" type="file" accept=".csv,text/csv" hidden>
+    <input id="score-file" type="file" accept=".csv,text/csv" hidden>
   </div>
 </header>
 <p class="file-status" id="folder-status" role="status">Choose a target folder or the parent folder containing multiple targets.</p>
+<nav class="view-nav" aria-label="Viewer sections">
+  <button id="show-inspection" type="button" aria-controls="inspection-panel" aria-pressed="true">Inspection</button>
+  <button id="show-analysis" type="button" aria-controls="analysis-panel" aria-pressed="false">Analysis</button>
+</nav>
 <main class="workspace">
   <aside class="card sidebar" aria-label="Target filters">
     <h2>Targets</h2>
     <label for="search">Search TARGETID</label>
     <input id="search" type="search" inputmode="numeric" placeholder="Type a target ID" autocomplete="off">
+    <label for="flag-filter">My review flags</label>
+    <select id="flag-filter" disabled>
+      <option value="">All targets</option>
+      <option value="any">Any flag</option>
+    </select>
     <div class="range">
       <div><label for="min-z">Min redshift</label><input id="min-z" type="number" step="any" placeholder="Any" disabled></div>
       <div><label for="max-z">Max redshift</label><input id="max-z" type="number" step="any" placeholder="Any" disabled></div>
@@ -181,6 +218,19 @@
       <button id="open-latents" type="button">Load latent spreads CSV</button>
       <input id="latent-file" type="file" accept=".csv,text/csv" hidden>
     </fieldset>
+    <form id="sample-form" novalidate>
+      <fieldset class="latent-filter">
+        <legend>Random sample</legend>
+        <label class="sample-size-label" for="sample-size">Number of targets</label>
+        <input id="sample-size" type="number" min="1" step="1" aria-describedby="sample-error" disabled>
+        <div class="sample-controls">
+          <button id="draw-sample" type="submit" disabled>Draw sample</button>
+          <button id="clear-sample" type="button" hidden>Show all matches</button>
+          <button id="resume-sample" type="button" hidden>Resume saved sample</button>
+        </div>
+        <p id="sample-error" class="hint" role="status" hidden></p>
+      </fieldset>
+    </form>
     <div class="list-head">
       <span id="target-count" class="count" aria-live="polite">0 targets</span>
       <button id="clear" type="button" disabled>Clear filters</button>
@@ -192,7 +242,7 @@
       <button id="next-page" type="button" aria-label="Next target list page">›</button>
     </div>
   </aside>
-  <section class="card" aria-label="Spectrum viewer">
+  <section class="card" id="inspection-panel" aria-label="Spectrum viewer">
     <div class="viewer-head">
       <div>
         <h2 id="title">Spectrum viewer</h2>
@@ -211,15 +261,20 @@
       <input id="reviewer-name" type="text" maxlength="80" placeholder="Your name" required>
       <button type="submit">Use name</button>
       <span id="score-mode" class="review-status" role="status"></span>
+      <span id="import-status" class="review-status" role="status"></span>
       <button id="export-previous-scores" type="button" hidden>Export previous browser scores</button>
     </form>
     <div class="review" id="review" hidden>
       <strong id="score-label">Your target score</strong>
       <div class="score-buttons" id="score-buttons" role="group" aria-labelledby="score-label">
         <button type="button" data-score="1" aria-pressed="false">1</button>
+        <button class="half-score" type="button" data-score="1.5" aria-pressed="false">1.5</button>
         <button type="button" data-score="2" aria-pressed="false">2</button>
+        <button class="half-score" type="button" data-score="2.5" aria-pressed="false">2.5</button>
         <button type="button" data-score="3" aria-pressed="false">3</button>
+        <button class="half-score" type="button" data-score="3.5" aria-pressed="false">3.5</button>
         <button type="button" data-score="4" aria-pressed="false">4</button>
+        <button class="half-score" type="button" data-score="4.5" aria-pressed="false">4.5</button>
         <button type="button" data-score="5" aria-pressed="false">5</button>
       </div>
       <button id="clear-score" type="button" hidden>Clear score</button>
@@ -229,6 +284,16 @@
         <label for="review-notes">Your notes</label>
         <textarea id="review-notes" maxlength="1500" rows="2" placeholder="What influenced your score?"></textarea>
         <button id="save-note" type="button" disabled>Save note</button>
+      </div>
+      <div id="review-flags" class="review-flags" role="group" aria-labelledby="flag-label">
+        <strong id="flag-label">Flags</strong>
+        <button type="button" data-flag="sky-subtraction-error" aria-pressed="false">Sky subtraction error</button>
+        <button type="button" data-flag="redshift-error" aria-pressed="false">Redshift error</button>
+        <button type="button" data-flag="reconstruction-error" aria-pressed="false">Reconstruction error</button>
+        <button type="button" data-flag="continuum-offset" aria-pressed="false">Continuum offset</button>
+        <button type="button" data-flag="lya" aria-pressed="false">Lyα</button>
+        <button type="button" data-flag="intermediate-clq" aria-pressed="false">Intermediate CLQ</button>
+        <button type="button" data-flag="exceptional-clq" aria-pressed="false">Exceptional CLQ example</button>
       </div>
     </div>
     <ul id="other-scores" class="other-scores" aria-live="polite" hidden></ul>
@@ -248,6 +313,31 @@
       <img id="plot" alt="">
     </div>
   </section>
+  <section class="card analysis-panel" id="analysis-panel" aria-labelledby="analysis-title" hidden>
+    <h2 id="analysis-title">Score analysis</h2>
+    <div class="analysis-controls">
+      <label>Targets
+        <select id="analysis-cohort">
+          <option value="matches">All filtered matches</option>
+          <option id="analysis-sample-option" value="sample" disabled>Current random sample</option>
+        </select>
+      </label>
+      <label>Scores
+        <select id="analysis-reviewers">
+          <option value="mine">My scores</option>
+          <option id="analysis-team-option" value="team" disabled>Team average</option>
+          <optgroup id="analysis-named-reviewers" label="Individual reviewers"></optgroup>
+        </select>
+      </label>
+      <button id="refresh-analysis" type="button">Refresh scores</button>
+      <button id="export-analysis" type="button" disabled>Download targets CSV</button>
+      <button id="export-analysis-summary" type="button" disabled>Download counts CSV</button>
+      <button id="export-analysis-png" type="button" disabled>Download figure PNGs (ZIP)</button>
+    </div>
+    <p class="hint" id="analysis-status" role="status"></p>
+    <p class="hint" id="figure-export-status" role="status"></p>
+    <div class="analysis-charts" id="analysis-charts"></div>
+  </section>
 </main>
 <script>
   const byId = (id) => document.getElementById(id);
@@ -260,6 +350,10 @@
   const spreadMode = byId("spread-mode");
   let cutoffFields = new Map();
   const latentFile = byId("latent-file");
+  const sampleSize = byId("sample-size");
+  const drawSample = byId("draw-sample");
+  const clearSample = byId("clear-sample");
+  const resumeSample = byId("resume-sample");
   const targetList = byId("targets");
   const observations = byId("observations");
   const plotArea = byId("plot-area");
@@ -269,6 +363,12 @@
   const pageSize = 100;
   const scoreKey = "quassiQ.visualInspection.scores.v1:" + location.pathname.replace(/index\.html$/, "");
   const scoreButtons = Array.from(byId("score-buttons").querySelectorAll("button"));
+  const flagButtons = Array.from(byId("review-flags").querySelectorAll("button"));
+  const flagLabels = new Map(flagButtons.map((button) => [button.dataset.flag, button.textContent.trim()]));
+  const flagFilter = byId("flag-filter");
+  for (const [flag, label] of flagLabels) flagFilter.add(new Option(label, flag));
+  const scoreFile = byId("score-file");
+  const importControl = byId("import-scores");
   const profilePrefix = scoreKey + ":reviewer:";
   const reviewerKey = scoreKey + ":activeReviewer";
   const defaultReviewer = "My scores";
@@ -290,7 +390,9 @@
 
   let plotsByTarget = new Map();
   let redshiftByTarget = new Map();
+  let matchingIds = [];
   let visibleIds = [];
+  let activeSample = null;
   let selectedId = "";
   let selectedFile = null;
   let plotUrl = "";
@@ -312,13 +414,16 @@
     }
   }
 
-  async function scoreRequest(params, payload) {
+  async function scoreRequest(params, payload, suffix = "") {
     const query = params ? "?" + new URLSearchParams(params) : "";
     const options = payload ? {
       method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload),
     } : {cache: "no-store"};
-    const response = await fetch("./api/scores" + query, options);
-    if (!response.ok) throw new Error("The score server did not complete the request.");
+    const response = await fetch("./api/scores" + suffix + query, options);
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}));
+      throw new Error(result.error ?? "The score server did not complete the request.");
+    }
     return response.json();
   }
 
@@ -344,14 +449,18 @@
 
   async function selectReviewer(name) {
     if (!scoringReady || !name.trim()) return;
+    const previousReviewer = reviewer.toLowerCase();
     reviewer = name.trim();
+    byId("import-status").textContent = "";
+    if (previousReviewer !== reviewer.toLowerCase() && activeSample) showTargetList();
+    refreshResumeButton();
     byId("reviewer-name").value = reviewer;
     try { localStorage.setItem(reviewerKey, reviewer); } catch { /* Scores can still be saved on the server. */ }
     showOthers.checked = false;
     reviewerReady = false;
     scores = new Map();
     renderScore("Loading your reviews…");
-    renderTargets();
+    refreshReviewedTargets();
     refreshOtherScores();
     const request = ++reviewerRequest;
     try {
@@ -361,7 +470,7 @@
       scores = loaded;
       reviewerReady = true;
       renderScore();
-      renderTargets();
+      refreshReviewedTargets();
     } catch (error) {
       if (request === reviewerRequest) renderScore(error.message + " Select your name again to retry.");
     }
@@ -371,6 +480,8 @@
     return JSON.stringify([reviewer.toLowerCase(), selectedId]);
   }
 
+  let pendingFlag = null;
+
   function renderScore(message = "") {
     const entry = scores.get(selectedId);
     const enabled = reviewerReady && Boolean(selectedId) && !savingScore;
@@ -379,9 +490,20 @@
       control.disabled = !enabled;
       control.setAttribute("aria-pressed", String(Number(control.dataset.score) === entry?.score));
     }
+    for (const control of flagButtons) {
+      control.disabled = !enabled;
+      const flag = control.dataset.flag;
+      const pending = pendingFlag?.targetId === selectedId && pendingFlag?.reviewer === reviewer
+        && pendingFlag?.name === flag;
+      control.toggleAttribute("data-saving", pending);
+      control.setAttribute("aria-pressed", String(pending ? pendingFlag.enabled : (entry?.flags?.includes(flag) ?? false)));
+    }
     byId("clear-score").hidden = entry?.score == null;
     byId("clear-score").disabled = !enabled;
     byId("export-scores").disabled = !reviewerReady || !scores.size;
+    byId("export-flagged").disabled = !reviewerReady || !Array.from(scores.values()).some(hasReviewFlags);
+    flagFilter.disabled = !reviewerReady;
+    importControl.disabled = !reviewerReady || savingScore;
     showOthers.disabled = !reviewerReady || !selectedId;
     reviewNotes.disabled = !enabled;
     reviewNotes.value = noteDrafts.get(noteDraftKey()) ?? entry?.notes ?? "";
@@ -390,7 +512,7 @@
       : entry ? (sharedScores ? "Saved to shared database" : "Saved in this browser") : "Unscored");
   }
 
-  async function updateReview(score, scoringCurrentObservation = false) {
+  async function updateReview(score, scoringCurrentObservation = false, flag = null) {
     if (!reviewerReady || !selectedId || savingScore) return;
     const id = selectedId;
     const name = reviewer;
@@ -399,34 +521,116 @@
     const observation = scoringCurrentObservation
       ? selectedObservation : scores.get(id)?.observation || selectedObservation;
     const request = reviewerRequest;
-    let entry = score !== null || notes ? {score, observation, notes, reviewedAt: new Date().toISOString()} : null;
+    let entry;
+    let failure = "";
     savingScore = true;
+    if (flag) pendingFlag = {...flag, targetId: id, reviewer: name};
     renderScore("Saving…");
     try {
       if (sharedScores) {
-        ({entry} = await scoreRequest(null, {reviewer: name, targetId: id, score, observation, notes}));
+        const change = flag ? {flag} : {score, notes};
+        ({entry} = await scoreRequest(null, {reviewer: name, targetId: id, observation, ...change}));
+        if (flag && (entry === null ? flag.enabled : !Array.isArray(entry?.flags) ||
+          entry.flags.includes(flag.name) !== flag.enabled)) {
+          throw new Error("The server did not confirm the flag change. Restart it with the updated build_vi_dataset.py.");
+        }
       } else {
         const updated = readBrowserScores(name);
+        const previous = updated.get(id);
+        const flags = new Set(previous?.flags ?? []);
+        if (flag?.enabled) flags.add(flag.name);
+        else if (flag) flags.delete(flag.name);
+        const nextScore = flag ? previous?.score ?? null : score;
+        const nextNotes = flag ? previous?.notes ?? "" : notes;
+        entry = nextScore !== null || nextNotes || flags.size ? {
+          score: nextScore, notes: nextNotes, flags: [...flags],
+          observation: flag ? previous?.observation ?? observation : observation,
+          reviewedAt: flag && previous ? previous.reviewedAt : new Date().toISOString(),
+        } : null;
         if (entry) updated.set(id, entry);
         else updated.delete(id);
         localStorage.setItem(profilePrefix + name.toLowerCase(), JSON.stringify({reviewer: name, scores: Object.fromEntries(updated)}));
       }
-      noteDrafts.delete(key);
+      if (!flag) noteDrafts.delete(key);
       if (request !== reviewerRequest) return;
       if (entry) scores.set(id, entry);
       else scores.delete(id);
-      renderTargets();
-    } catch {
-      if (request === reviewerRequest) {
-        savingScore = false;
-        renderScore("Could not save your review. Try again.");
+      if (flag) refreshReviewedTargets();
+      else renderTargets();
+      if (!analysisPanel.hidden) refreshAnalysis();
+    } catch (error) {
+      if (request === reviewerRequest && id === selectedId) {
+        const action = flag ? "Could not save flag." : "Could not save review.";
+        failure = action + " " + error.message;
       }
-      return;
     } finally {
-      if (savingScore) {
-        savingScore = false;
-        renderScore();
+      savingScore = false;
+      pendingFlag = null;
+      renderScore(failure);
+    }
+  }
+
+  function readScoreImport(text) {
+    const rows = csvRows(text);
+    const headings = rows.next().value?.map((value) => value.toUpperCase()) ?? [];
+    const targetColumn = headings.indexOf("TARGETID");
+    const scoreColumn = headings.indexOf("SCORE");
+    if (targetColumn < 0 || scoreColumn < 0) throw new Error("The CSV needs TARGETID and Score columns.");
+    const targets = new Set();
+    const imported = [];
+    for (const row of rows) {
+      const targetId = row[targetColumn];
+      const score = Number(row[scoreColumn]);
+      if (!/^[0-9]{1,20}$/.test(targetId ?? "")) throw new Error("Each TARGETID must contain its exact digits.");
+      if (!(score >= 1 && score <= 5 && Number.isInteger(score * 2))) {
+        throw new Error("Scores must be from 1 to 5 in half-point steps.");
       }
+      if (targets.has(targetId)) throw new Error("Each TARGETID must appear only once.");
+      targets.add(targetId);
+      imported.push({targetId, score});
+    }
+    if (!imported.length) throw new Error("The CSV contains no scores.");
+    return imported;
+  }
+
+  function importBrowserScores(name, rows) {
+    const updated = readBrowserScores(name);
+    const inserted = {};
+    for (const {targetId, score} of rows) {
+      if (updated.has(targetId)) continue;
+      const entry = {score, observation: "", reviewedAt: "", notes: ""};
+      updated.set(targetId, entry);
+      inserted[targetId] = entry;
+    }
+    localStorage.setItem(profilePrefix + name.toLowerCase(), JSON.stringify({reviewer: name, scores: Object.fromEntries(updated)}));
+    return {inserted, skipped: rows.length - Object.keys(inserted).length};
+  }
+
+  async function importScoreFile(file) {
+    if (!file || !reviewerReady || savingScore) return;
+    const request = reviewerRequest;
+    const name = reviewer;
+    const status = byId("import-status");
+    savingScore = true;
+    status.textContent = "Importing scores for " + name + "…";
+    renderScore();
+    try {
+      const rows = readScoreImport(await file.text());
+      const {inserted, skipped} = sharedScores
+        ? await scoreRequest(null, {reviewer: name, rows}, "/import") : importBrowserScores(name, rows);
+      if (request !== reviewerRequest) return;
+      const entries = Object.entries(inserted);
+      for (const [id, entry] of entries) scores.set(id, entry);
+      if (!analysisPanel.hidden) refreshAnalysis();
+      const outside = entries.filter(([id]) => !plotsByTarget.has(id)).length;
+      status.textContent = entries.length + " scores imported. " + skipped + " existing reviews kept."
+        + (outside ? " " + outside + " imported targets are outside the loaded plots." : "");
+      renderTargets();
+    } catch (error) {
+      if (request === reviewerRequest) status.textContent = error.message;
+    } finally {
+      savingScore = false;
+      renderScore();
     }
   }
 
@@ -467,8 +671,9 @@
       list.replaceChildren();
       if (!others.length) addLine("No other reviews for this target.");
       for (const entry of others) {
+        const flags = reviewFlagText(entry);
         addLine(entry.reviewer + (entry.score == null ? "" : " · " + entry.score + "/5")
-          + (entry.notes ? "\n" + entry.notes : ""));
+          + (entry.notes ? "\n" + entry.notes : "") + (flags ? "\nFlags: " + flags : ""));
       }
     } catch {
       if (request === othersRequest) {
@@ -478,25 +683,543 @@
     }
   }
 
-  function exportScores(entries, name) {
-    const rows = [["TARGETID", "Score", "Observation", "ReviewedAt", "Reviewer", "Notes"]];
+  function reviewFlagText(entry) {
+    return (entry.flags ?? []).map((flag) => flagLabels.get(flag) ?? flag).join(" | ");
+  }
+
+  function hasReviewFlags(entry) {
+    return (entry.flags?.length ?? 0) > 0;
+  }
+
+  function exportScores(entries, name, {flaggedOnly = false} = {}) {
+    const rows = [["TARGETID", "Score", "Observation", "ReviewedAt", "Reviewer", "Notes", "Flags"]];
     for (const [id, entry] of entries) {
-      rows.push([id, entry.score, entry.observation, entry.reviewedAt, name, entry.notes]);
+      if (flaggedOnly && !hasReviewFlags(entry)) continue;
+      rows.push([id, entry.score, entry.observation, entry.reviewedAt, name, entry.notes, reviewFlagText(entry)]);
     }
+    downloadCsv(flaggedOnly ? "quassiq-vi-flagged.csv" : "quassiq-vi-scores.csv", rows);
+  }
+
+  function downloadCsv(filename, rows) {
     function csvCell(value) {
       let text = String(value ?? "");
       if (/^\s*[=+@-]/.test(text)) text = "'" + text;
       return /[",\r\n]/.test(text) ? '"' + text.replaceAll('"', '""') + '"' : text;
     }
     const csv = rows.map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
-    const url = URL.createObjectURL(new Blob([csv], {type: "text/csv;charset=utf-8"}));
+    downloadBlob(filename, new Blob([csv], {type: "text/csv;charset=utf-8"}));
+  }
+
+  function downloadBlob(filename, blob) {
+    const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "quassiq-vi-scores.csv";
+    link.download = filename;
     document.body.append(link);
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  const scoreBins = [
+    {label: "[1, 3)", color: "#4072aa"},
+    {label: "[3, 4)", color: "#f0a202"},
+    {label: "[4, 5]", color: "#40816d"},
+  ];
+  const scoreSteps = Array.from({length: 9}, (_, index) => 1 + index / 2);
+  const analysisPanel = byId("analysis-panel");
+  const analysisCohort = byId("analysis-cohort");
+  const analysisReviewers = byId("analysis-reviewers");
+  let analysisScores = new Map();
+  let analysisRequest = 0;
+  let analysisBusy = false;
+  let analysisExportBusy = false;
+  let analysisError = "";
+
+  function spreadForTarget(targetId, name) {
+    const range = latentByTarget.get(targetId)?.[name];
+    return range?.[2] ?? (range ? range[1] - range[0] : NaN);
+  }
+
+  function analysisResults() {
+    const ids = analysisCohort.value === "sample" && activeSample ? activeSample.ids : matchingIds;
+    const useMine = analysisReviewers.value === "mine";
+    const source = useMine ? reviewer : analysisReviewers.selectedOptions[0]?.textContent ?? "";
+    const selectedScores = useMine ? scores : analysisScores;
+    const rows = ids.map((id) => {
+      const entry = selectedScores.get(id);
+      const score = entry?.score;
+      const isScored = Number.isFinite(score) && score >= 1 && score <= 5;
+      const bin = !isScored ? -1 : score < 3 ? 0 : score < 4 ? 1 : 2;
+      return {id, score: isScored ? score : null, bin, count: isScored ? entry.reviewCount ?? 1 : 0};
+    });
+    const cuts = Array.from(cutoffFields).filter(([, input]) => input.value !== "" && input.validity.valid)
+      .map(([name, input]) => [name, input.valueAsNumber]);
+    const groups = [{label: "All selected targets", rows}];
+    for (const [name, cutoff] of cuts) {
+      groups.push({
+        label: "Latent " + name.slice(6) + " > " + cutoff,
+        rows: rows.filter((row) => spreadForTarget(row.id, name) > cutoff),
+      });
+    }
+    return {rows, groups, cuts, source};
+  }
+
+  function scoreBinCounts(rows) {
+    const counts = [0, 0, 0];
+    for (const row of rows) {
+      if (row.bin >= 0) counts[row.bin]++;
+    }
+    return counts;
+  }
+
+  function chartCard(title) {
+    const figure = document.createElement("figure");
+    figure.className = "analysis-chart";
+    const caption = document.createElement("figcaption");
+    caption.textContent = title;
+    figure.append(caption);
+    return figure;
+  }
+
+  function scorePie(group) {
+    const counts = scoreBinCounts(group.rows);
+    const total = counts.reduce((sum, count) => sum + count, 0);
+    const figure = chartCard(group.label);
+    const pie = document.createElement("div");
+    pie.className = "score-pie";
+    pie.setAttribute("aria-hidden", "true");
+    if (total) {
+      let position = 0;
+      const segments = counts.map((count, index) => {
+        const start = position;
+        position += count;
+        return scoreBins[index].color + " " + (100 * start / total) + "% " + (100 * position / total) + "%";
+      });
+      pie.style.background = "conic-gradient(" + segments.join(",") + ")";
+    } else {
+      pie.style.background = "#eef0f4";
+    }
+    const legend = document.createElement("ul");
+    legend.className = "chart-legend";
+    for (const [index, bin] of scoreBins.entries()) {
+      const item = document.createElement("li");
+      const swatch = document.createElement("span");
+      swatch.className = "chart-swatch";
+      swatch.style.backgroundColor = bin.color;
+      const percent = total ? (100 * counts[index] / total).toFixed(1) + "%" : "—";
+      item.append(swatch, document.createTextNode(bin.label + " · " + counts[index] + " (" + percent + ")"));
+      legend.append(item);
+    }
+    const caption = document.createElement("p");
+    caption.className = "hint";
+    caption.textContent = total + " of " + group.rows.length + " targets scored";
+    figure.append(pie, legend, caption);
+    return figure;
+  }
+
+  function exactScoreCounts(rows) {
+    const counts = new Map(scoreSteps.map((score) => [score, 0]));
+    for (const {score} of rows) {
+      if (score !== null) counts.set(score, (counts.get(score) ?? 0) + 1);
+    }
+    return new Map([...counts].sort(([a], [b]) => a - b));
+  }
+
+  function displayScore(score) {
+    return String(Number(score.toFixed(3)));
+  }
+
+  function scoreBars(rows) {
+    const figure = chartCard("Count by exact score");
+    const counts = exactScoreCounts(rows);
+    const max = Math.max(1, ...counts.values());
+    for (const [score, count] of counts) {
+      const row = document.createElement("div");
+      row.className = "score-bar-row";
+      const track = document.createElement("div");
+      track.className = "score-bar-track";
+      track.setAttribute("aria-hidden", "true");
+      const fill = document.createElement("span");
+      fill.className = "score-bar-fill";
+      fill.style.width = (100 * count / max) + "%";
+      track.append(fill);
+      row.append(document.createTextNode(displayScore(score)), track, document.createTextNode(String(count)));
+      figure.append(row);
+    }
+    return figure;
+  }
+
+  function renderAnalysis() {
+    if (analysisPanel.hidden) return;
+    byId("analysis-sample-option").disabled = !activeSample;
+    if (!activeSample && analysisCohort.value === "sample") analysisCohort.value = "matches";
+    byId("analysis-team-option").disabled = !sharedScores;
+    const charts = byId("analysis-charts");
+    const status = byId("analysis-status");
+    const {rows, groups, source} = analysisResults();
+    const waiting = analysisBusy || Boolean(analysisError);
+    byId("export-analysis").disabled = byId("export-analysis-summary").disabled = waiting || !rows.length;
+    byId("export-analysis-png").disabled = waiting || !rows.length || analysisExportBusy;
+    byId("refresh-analysis").disabled = analysisBusy;
+    charts.replaceChildren();
+    if (waiting) {
+      status.textContent = analysisError || "Loading saved scores…";
+      return;
+    }
+    const scored = rows.filter(({score}) => score !== null).length;
+    const scope = analysisReviewers.value === "team" ? "Team averages use the available scores for each target."
+      : analysisReviewers.value !== "mine" || reviewerReady ? "Scores for " + source + "."
+      : "Choose your reviewer name in Inspection to load your scores.";
+    status.textContent = scored + " of " + rows.length + " targets scored. " + scope
+      + (groups.length > 1 ? " A target can appear in multiple latent charts." : "");
+    if (!rows.length) return;
+    charts.append(scorePie(groups[0]), scoreBars(rows), ...groups.slice(1).map(scorePie));
+  }
+
+  async function refreshAnalysis() {
+    const request = ++analysisRequest;
+    analysisError = "";
+    const selectedSource = analysisReviewers.value;
+    const activeReviewer = reviewer;
+    if (!sharedScores) {
+      analysisBusy = false;
+      renderAnalysis();
+      return;
+    }
+    analysisBusy = true;
+    renderAnalysis();
+    try {
+      const reviewerKey = selectedSource.startsWith("reviewer:") ? selectedSource.slice(9) : null;
+      const [data, mine] = await Promise.all([
+        scoreRequest(reviewerKey ? {reviewerKey} : null, null, "/analysis"),
+        selectedSource === "mine" && reviewerReady ? scoreRequest({reviewer: activeReviewer}) : null,
+      ]);
+      if (request !== analysisRequest) return;
+      if (!Array.isArray(data.reviewers)) {
+        throw new Error("Restart the viewer with the updated build_vi_dataset.py to load team averages and reviewer names.");
+      }
+      const namedReviewers = byId("analysis-named-reviewers");
+      namedReviewers.replaceChildren(...data.reviewers.map(({key, name}) => new Option(name, "reviewer:" + key)));
+      analysisReviewers.value = selectedSource;
+      if (!analysisReviewers.value) analysisReviewers.value = "team";
+      analysisScores = new Map(Object.entries(data.targets));
+      if (mine && activeReviewer === reviewer) {
+        scores = new Map(Object.entries(mine.scores));
+        refreshReviewedTargets();
+        renderScore();
+      }
+      if (analysisReviewers.value !== selectedSource) return refreshAnalysis();
+    } catch (error) {
+      if (request === analysisRequest) analysisError = error.message;
+    } finally {
+      if (request === analysisRequest) {
+        analysisBusy = false;
+        renderAnalysis();
+      }
+    }
+  }
+
+  function switchView(analyze) {
+    byId("inspection-panel").hidden = analyze;
+    analysisPanel.hidden = !analyze;
+    byId("show-inspection").setAttribute("aria-pressed", String(!analyze));
+    byId("show-analysis").setAttribute("aria-pressed", String(analyze));
+    if (analyze) refreshAnalysis();
+  }
+
+  function exportAnalysis() {
+    const {rows, cuts, source} = analysisResults();
+    const csv = [["TARGETID", "Z", "Score", "ScoreBin", "ReviewCount", "ScoreSource",
+      ...cuts.map(([name]) => "SpreadLatent" + name.slice(6))]];
+    for (const {id, score, bin, count} of rows) {
+      csv.push([id, redshiftByTarget.get(id), score, scoreBins[bin]?.label, count, source,
+        ...cuts.map(([name]) => {
+          const spread = spreadForTarget(id, name);
+          return Number.isFinite(spread) ? spread : "";
+        })]);
+    }
+    downloadCsv("quassiq-analysis-targets.csv", csv);
+  }
+
+  function exportAnalysisSummary() {
+    const {rows, groups, source} = analysisResults();
+    const csv = [["TargetGroup", "Breakdown", "Score", "Count", "ScoredTargets", "MatchingTargets", "PercentOfScored", "ScoreSource"]];
+    for (const group of groups) {
+      const counts = scoreBinCounts(group.rows);
+      const scored = counts.reduce((sum, count) => sum + count, 0);
+      for (const [index, bin] of scoreBins.entries()) {
+        csv.push([group.label, "Range", bin.label, counts[index], scored, group.rows.length,
+          scored ? 100 * counts[index] / scored : "", source]);
+      }
+    }
+    const exact = exactScoreCounts(rows);
+    const scored = Array.from(exact.values()).reduce((sum, count) => sum + count, 0);
+    for (const [score, count] of exact) {
+      csv.push([groups[0].label, "Exact", score, count, scored, rows.length, scored ? 100 * count / scored : "", source]);
+    }
+    downloadCsv("quassiq-analysis-counts.csv", csv);
+  }
+
+  const exportFont = "DejaVu Sans, Arial, sans-serif";
+
+  function paintScorePie(ctx, counts) {
+    const total = counts.reduce((sum, count) => sum + count, 0);
+    const centerX = 180;
+    const centerY = 130;
+    const radius = 77;
+    const smallSlices = [];
+    let angle = -Math.PI / 2;
+    ctx.font = "9px " + exportFont;
+    ctx.textAlign = "center";
+    for (const [index, count] of counts.entries()) {
+      if (!count) continue;
+      const end = angle + 2 * Math.PI * count / total;
+      const middle = (angle + end) / 2;
+      const percent = 100 * count / total;
+      const label = [percent.toFixed(1) + "%", "(n=" + count + ")"];
+      ctx.fillStyle = scoreBins[index].color;
+      ctx.beginPath();
+      ctx.moveTo(centerX, centerY);
+      ctx.arc(centerX, centerY, radius, angle, end);
+      ctx.closePath();
+      ctx.fill();
+      if (count < total) {
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+      }
+      if (percent < 9) {
+        smallSlices.push({
+          label, side: Math.cos(middle) < 0 ? -1 : 1,
+          x: centerX + radius * Math.cos(middle), y: centerY + radius * Math.sin(middle),
+        });
+      } else {
+        const x = centerX + 0.62 * radius * Math.cos(middle);
+        const y = centerY + 0.62 * radius * Math.sin(middle);
+        ctx.fillStyle = "#111";
+        ctx.fillText(label[0], x, y - 2);
+        ctx.fillText(label[1], x, y + 9);
+      }
+      angle = end;
+    }
+    for (const side of [-1, 1]) {
+      const labels = smallSlices.filter((slice) => slice.side === side).sort((first, second) => first.y - second.y);
+      const guideX = centerX + side * (radius + 17);
+      let previous = 15;
+      for (const [index, slice] of labels.entries()) {
+        const y = Math.min(220 - 23 * (labels.length - 1 - index), Math.max(previous + 23, slice.y));
+        previous = y;
+        ctx.strokeStyle = "#555";
+        ctx.lineWidth = 0.5;
+        ctx.beginPath();
+        ctx.moveTo(slice.x, slice.y);
+        ctx.lineTo(guideX, y);
+        ctx.stroke();
+        ctx.textAlign = side < 0 ? "right" : "left";
+        ctx.fillStyle = "#111";
+        ctx.fillText(slice.label[0], guideX + side * 3, y - 2);
+        ctx.fillText(slice.label[1], guideX + side * 3, y + 9);
+      }
+    }
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#111";
+    if (!total) ctx.fillText("No scored targets", centerX, centerY);
+    ctx.fillText("Score", centerX, 236);
+    ctx.textAlign = "left";
+    for (const [index, bin] of scoreBins.entries()) {
+      const x = 78 + index * 72;
+      ctx.fillStyle = bin.color;
+      ctx.fillRect(x, 246, 21, 8);
+      ctx.fillStyle = "#111";
+      ctx.fillText(bin.label, x + 27, 254);
+    }
+  }
+
+  function paintScoreBars(ctx, rows) {
+    const counts = exactScoreCounts(rows);
+    const maxCount = Math.max(1, ...counts.values());
+    const stepSize = 10 ** Math.floor(Math.log10(maxCount / 4));
+    const tickStep = Math.max(1, [1, 2, 5, 10].map((step) => step * stepSize)
+      .find((step) => step >= maxCount / 4));
+    const limit = Math.ceil(maxCount / tickStep) * tickStep;
+    const left = 49, right = 338, top = 46, bottom = 219;
+    const binWidth = (right - left) / counts.size;
+    const plotHeight = bottom - top;
+    ctx.strokeStyle = ctx.fillStyle = "#111";
+    ctx.lineWidth = 0.55;
+    ctx.strokeRect(left, top, right - left, plotHeight);
+    ctx.font = "9px " + exportFont;
+    ctx.textAlign = "right";
+    for (let tick = 0; tick <= limit; tick += tickStep) {
+      const y = bottom - plotHeight * tick / limit;
+      ctx.fillRect(left - 3, y, 3, 0.55);
+      ctx.fillText(String(tick), left - 6, y + 3);
+    }
+    ctx.textAlign = "center";
+    const labelEvery = Math.ceil(28 / binWidth);
+    for (const [index, [score, count]] of Array.from(counts).entries()) {
+      const x = left + (index + 0.5) * binWidth;
+      const barHeight = plotHeight * count / limit;
+      ctx.fillStyle = "#27354f";
+      if (count) ctx.fillRect(x - 0.35 * binWidth, bottom - barHeight, 0.7 * binWidth, barHeight);
+      ctx.fillStyle = "#111";
+      ctx.fillRect(x, bottom, 0.55, 3);
+      if (index % labelEvery === 0) ctx.fillText(displayScore(score), x, bottom + 15);
+      if (count && labelEvery === 1) ctx.fillText(String(count), x, bottom - barHeight - 4);
+    }
+    ctx.fillText("Score", (left + right) / 2, 253);
+    ctx.save();
+    ctx.translate(13, (top + bottom) / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText("Number of targets", 0, 0);
+    ctx.restore();
+  }
+
+  function crc32(bytes) {
+    let crc = 0xffffffff;
+    for (const byte of bytes) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++) {
+        crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+      }
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  async function pngWithResolution(blob, dpi) {
+    // PNG pHYs stores pixels per metre. Replace the browser's default density.
+    const original = new DataView(await blob.arrayBuffer());
+    const density = new Uint8Array(21);
+    const view = new DataView(density.buffer);
+    view.setUint32(0, 9);
+    density.set([112, 72, 89, 115], 4); // pHYs
+    const pixelsPerMetre = Math.round(dpi / 0.0254);
+    view.setUint32(8, pixelsPerMetre);
+    view.setUint32(12, pixelsPerMetre);
+    density[16] = 1;
+    view.setUint32(17, crc32(density.subarray(4, 17)));
+
+    const parts = [blob.slice(0, 8)];
+    for (let offset = 8; offset + 12 <= original.byteLength;) {
+      const end = offset + original.getUint32(offset) + 12;
+      if (end > original.byteLength) return blob;
+      const type = original.getUint32(offset + 4);
+      if (type !== 0x70485973) parts.push(blob.slice(offset, end)); // Skip old pHYs.
+      if (type === 0x49484452) parts.push(density); // Insert just after IHDR.
+      offset = end;
+    }
+    return new Blob(parts, {type: "image/png"});
+  }
+
+  async function zipAnalysisImages(files) {
+    // PNGs are already compressed. Store each image inside a standard ZIP.
+    const encoder = new TextEncoder();
+    const contents = [];
+    const directory = [];
+    let offset = 0;
+    let directorySize = 0;
+    for (const {name, blob} of files) {
+      const filename = encoder.encode(name);
+      const checksum = crc32(new Uint8Array(await blob.arrayBuffer()));
+      const local = new DataView(new ArrayBuffer(30));
+      local.setUint32(0, 0x04034b50, true);
+      local.setUint16(4, 20, true);
+      local.setUint16(6, 0x0800, true); // UTF-8 filename.
+      local.setUint16(12, 0x21, true); // 1980-01-01, the earliest DOS-format date.
+      local.setUint32(14, checksum, true);
+      local.setUint32(18, blob.size, true);
+      local.setUint32(22, blob.size, true);
+      local.setUint16(26, filename.length, true);
+
+      const central = new DataView(new ArrayBuffer(46));
+      central.setUint32(0, 0x02014b50, true);
+      central.setUint16(4, 20, true);
+      central.setUint16(6, 20, true);
+      central.setUint16(8, 0x0800, true);
+      central.setUint16(14, 0x21, true);
+      central.setUint32(16, checksum, true);
+      central.setUint32(20, blob.size, true);
+      central.setUint32(24, blob.size, true);
+      central.setUint16(28, filename.length, true);
+      central.setUint32(42, offset, true);
+
+      contents.push(local.buffer, filename, blob);
+      directory.push(central.buffer, filename);
+      offset += local.byteLength + filename.length + blob.size;
+      directorySize += central.byteLength + filename.length;
+    }
+    const end = new DataView(new ArrayBuffer(22));
+    end.setUint32(0, 0x06054b50, true);
+    end.setUint16(8, files.length, true);
+    end.setUint16(10, files.length, true);
+    end.setUint32(12, directorySize, true);
+    end.setUint32(16, offset, true);
+    return new Blob([...contents, ...directory, end.buffer], {type: "application/zip"});
+  }
+
+  function analysisFolderName(cuts, sample, matched, scored) {
+    const criteria = [];
+    if (search.value.trim()) criteria.push("id-" + search.value.trim().slice(0, 24));
+    if (minZ.value !== "") criteria.push("z-min-" + minZ.value);
+    if (maxZ.value !== "") criteria.push("z-max-" + maxZ.value);
+    if (cuts.length > 1) criteria.push(spreadMode.value === "all" ? "all" : "any");
+    for (const [name, cutoff] of cuts) criteria.push("L" + name.slice(6) + "-gt-" + cutoff);
+    const prefix = criteria.length ? criteria.join("_") : "no-cuts";
+    const suffix = [sample ? "sample" : "matches", "n-" + matched, "scored-" + scored].join("_");
+    const safePrefix = prefix.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 230 - suffix.length);
+    return safePrefix + "_" + suffix;
+  }
+
+  async function exportAnalysisPng() {
+    const {rows, groups, cuts} = analysisResults();
+    if (!rows.length || analysisExportBusy) return;
+    const button = byId("export-analysis-png");
+    const status = byId("figure-export-status");
+    const totalScored = rows.filter(({score}) => score !== null).length;
+    const folder = analysisFolderName(cuts, analysisCohort.value === "sample", rows.length, totalScored);
+    const width = 360, height = 270, dpi = 300;
+    const plots = [
+      {filename: "A_overall_scores", title: "Scores", counts: scoreBinCounts(groups[0].rows)},
+      {filename: "B_exact_score_counts", title: "Counts by exact score"},
+      ...groups.slice(1).map((group, index) => ({
+        filename: String.fromCharCode(67 + index) + "_latent" + cuts[index][0].slice(6),
+        title: group.label, counts: scoreBinCounts(group.rows),
+      })),
+    ];
+    analysisExportBusy = true;
+    button.disabled = true;
+    status.textContent = "Preparing PNGs…";
+    try {
+      const files = [];
+      for (const plot of plots) {
+        const canvas = document.createElement("canvas");
+        canvas.width = width * dpi / 72;
+        canvas.height = height * dpi / 72;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) throw new Error("Canvas unavailable.");
+        ctx.scale(canvas.width / width, canvas.height / height);
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, width, height);
+        ctx.fillStyle = "#111";
+        ctx.font = "12px " + exportFont;
+        ctx.textAlign = "center";
+        const n = plot.counts ? plot.counts.reduce((sum, count) => sum + count, 0) : totalScored;
+        ctx.fillText(plot.title + "  (n=" + n + ")", width / 2, 24, width - 24);
+        if (plot.counts) paintScorePie(ctx, plot.counts);
+        else paintScoreBars(ctx, rows);
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+        if (!blob) throw new Error("PNG encoding failed.");
+        files.push({name: folder + "/" + plot.filename + ".png", blob: await pngWithResolution(blob, dpi)});
+      }
+      downloadBlob(folder + ".zip", await zipAnalysisImages(files));
+      status.textContent = "";
+    } catch {
+      status.textContent = "Could not create the figure ZIP. Try again.";
+    } finally {
+      analysisExportBusy = false;
+      renderAnalysis();
+    }
   }
 
   function renderLatents() {
@@ -777,6 +1500,14 @@
 
   function selectTarget(id, focus = false) {
     selectedId = id;
+    if (activeSample && activeSample.targetId !== id) {
+      activeSample.targetId = id;
+      try {
+        localStorage.setItem(sampleStorageKey(), JSON.stringify(activeSample));
+      } catch {
+        showSampleError("This browser could not save your sample for later.");
+      }
+    }
     renderTargets();
     renderViewer();
     const activeButton = targetList.querySelector('[aria-pressed="true"]');
@@ -789,8 +1520,14 @@
     }
   }
 
-  function updateFilters() {
+  function refreshReviewedTargets() {
+    if (flagFilter.value) updateFilters({preserveSample: true});
+    else renderTargets();
+  }
+
+  function updateFilters({preserveSample = false} = {}) {
     const query = search.value.trim();
+    const flag = flagFilter.value;
     const min = minZ.value === "" ? -Infinity : minZ.valueAsNumber;
     const max = maxZ.value === "" ? Infinity : maxZ.valueAsNumber;
     const hasRange = minZ.value !== "" || maxZ.value !== "";
@@ -811,25 +1548,129 @@
         ? "Enter cutoffs of 0 or higher."
         : "Enter a cutoff for each latent you want to use. Spread must be greater than its cutoff.";
     }
-    visibleIds = invalidRedshift || invalidSpread ? [] : Array.from(plotsByTarget.keys()).filter((id) => {
+    matchingIds = invalidRedshift || invalidSpread ? [] : Array.from(plotsByTarget.keys()).filter((id) => {
       const z = redshiftByTarget.get(id);
       const matchesRedshift = !hasRange || (z !== undefined && z >= min && z <= max);
       if (!id.includes(query) || !matchesRedshift) return false;
+      const flags = scores.get(id)?.flags ?? [];
+      if (flag && !(flag === "any" ? flags.length > 0 : flags.includes(flag))) return false;
       if (!cuts.length) return true;
-      const ranges = latentByTarget.get(id);
       const exceedsCutoff = ([name, cutoff]) => {
-        const range = ranges?.[name];
-        const spread = range?.[2] ?? (range ? range[1] - range[0] : NaN);
-        return Number.isFinite(spread) && spread > cutoff;
+        return spreadForTarget(id, name) > cutoff;
       };
       return spreadMode.value === "all" ? cuts.every(exceedsCutoff) : cuts.some(exceedsCutoff);
     }).sort();
-    byId("target-count").textContent = invalidRedshift ? "Check redshift range"
-      : invalidSpread ? "Check spread cutoff" : visibleIds.length + " of " + plotsByTarget.size + " targets";
-    byId("clear").disabled = !(query || hasRange || invalidRedshift || invalidSpread || cuts.length || spreadMode.value === "all");
-    const nextId = visibleIds.includes(selectedId) ? selectedId : visibleIds[0] ?? "";
-    selectTarget(nextId);
+    byId("clear").disabled = !(query || flag || hasRange || invalidRedshift || invalidSpread || cuts.length || spreadMode.value === "all");
+    sampleSize.disabled = drawSample.disabled = matchingIds.length === 0;
+    sampleSize.max = String(matchingIds.length);
+    const sample = preserveSample && activeSample?.ids.every((id) => matchingIds.includes(id)) ? activeSample : null;
+    showTargetList(sample, invalidRedshift ? "Check redshift range" : invalidSpread ? "Check spread cutoff" : "");
   }
+
+  function showSampleError(message) {
+    const error = byId("sample-error");
+    error.textContent = message;
+    error.hidden = !message;
+  }
+
+  function sampleStorageKey() {
+    return scoreKey + ":sample:" + reviewer.toLowerCase();
+  }
+
+  function readSavedSample() {
+    try {
+      const sample = JSON.parse(getBrowserValue(sampleStorageKey()));
+      return Array.isArray(sample?.ids) && sample.ids.length && sample.filters ? sample : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function refreshResumeButton() {
+    resumeSample.hidden = Boolean(activeSample) || !readSavedSample();
+    resumeSample.disabled = !plotsByTarget.size;
+  }
+
+  function restoreSample() {
+    const sample = readSavedSample();
+    if (!sample || !plotsByTarget.size) return;
+    const {query, min, max, mode, cuts, flag = ""} = sample.filters;
+    if (flag && !reviewerReady) {
+      showSampleError("Load your reviews before resuming this sample.");
+      return;
+    }
+    if (((min || max) && minZ.disabled) || Object.keys(cuts).some((name) => !cutoffFields.has(name))) {
+      showSampleError("Load the redshift or latent data used for this sample, then resume it.");
+      return;
+    }
+    if (sample.ids.some((id) => !plotsByTarget.has(id))) {
+      showSampleError("Some saved targets are missing. Open the original plot dataset and try again.");
+      return;
+    }
+    search.value = query;
+    minZ.value = min;
+    maxZ.value = max;
+    spreadMode.value = mode;
+    flagFilter.value = flag;
+    for (const [name, input] of cutoffFields) input.value = cuts[name] ?? "";
+    sampleSize.value = String(sample.ids.length);
+    updateFilters();
+    const currentMatches = new Set(matchingIds);
+    if (sample.ids.some((id) => !currentMatches.has(id))) {
+      showSampleError("Some saved targets no longer pass the original filters. Check the catalog and saved flags.");
+      return;
+    }
+    showTargetList(sample);
+  }
+
+  function showTargetList(sample = null, filterError = "") {
+    activeSample = sample;
+    visibleIds = sample?.ids ?? matchingIds;
+    drawSample.textContent = sample ? "Draw new sample" : "Draw sample";
+    clearSample.hidden = !sample;
+    refreshResumeButton();
+    byId("target-count").textContent = filterError || (sample
+      ? visibleIds.length + " sampled of " + matchingIds.length + " matches"
+      : matchingIds.length + " of " + plotsByTarget.size + " targets");
+    showSampleError("");
+    sampleSize.setAttribute("aria-invalid", "false");
+    const preferred = sample ? sample.targetId : selectedId;
+    const nextId = visibleIds.includes(preferred) ? preferred : visibleIds[0] ?? "";
+    selectTarget(nextId);
+    renderAnalysis();
+  }
+
+  byId("sample-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!matchingIds.length) return;
+    const count = sampleSize.valueAsNumber;
+    if (!Number.isSafeInteger(count) || count < 1 || count > matchingIds.length) {
+      showSampleError("Enter a whole number from 1 to " + matchingIds.length + ".");
+      sampleSize.setAttribute("aria-invalid", "true");
+      return;
+    }
+    // Shuffle only the selected part of a copy, so no target can appear twice.
+    const pool = matchingIds.slice();
+    for (let index = 0; index < count; index++) {
+      const swap = index + Math.floor(Math.random() * (pool.length - index));
+      [pool[index], pool[swap]] = [pool[swap], pool[index]];
+    }
+    showTargetList({
+      ids: pool.slice(0, count),
+      targetId: "",
+      filters: {
+        query: search.value, min: minZ.value, max: maxZ.value, mode: spreadMode.value, flag: flagFilter.value,
+        cuts: Object.fromEntries(Array.from(cutoffFields).filter(([, input]) => input.value)
+          .map(([name, input]) => [name, input.value])),
+      },
+    });
+  });
+  sampleSize.addEventListener("input", () => {
+    showSampleError("");
+    sampleSize.setAttribute("aria-invalid", "false");
+  });
+  clearSample.addEventListener("click", () => showTargetList());
+  resumeSample.addEventListener("click", restoreSample);
 
   byId("open-plots").addEventListener("click", () => plotFolder.click());
   byId("open-catalog").addEventListener("click", () => catalogFile.click());
@@ -886,9 +1727,11 @@
   }
   latentOptions.addEventListener("input", updateFilters);
   spreadMode.addEventListener("change", updateFilters);
+  flagFilter.addEventListener("change", updateFilters);
   byId("clear").addEventListener("click", () => {
     search.value = minZ.value = maxZ.value = "";
     spreadMode.value = "any";
+    flagFilter.value = "";
     for (const input of cutoffFields.values()) input.value = "";
     updateFilters();
   });
@@ -910,6 +1753,13 @@
   for (const control of scoreButtons) {
     control.addEventListener("click", () => updateReview(Number(control.dataset.score), true));
   }
+  for (const control of flagButtons) {
+    control.addEventListener("click", () => {
+      const name = control.dataset.flag;
+      const enabled = !(scores.get(selectedId)?.flags?.includes(name));
+      updateReview(null, false, {name, enabled});
+    });
+  }
   byId("clear-score").addEventListener("click", () => updateReview(null));
   showOthers.addEventListener("change", refreshOtherScores);
   reviewNotes.addEventListener("input", () => {
@@ -919,17 +1769,35 @@
   });
   saveNote.addEventListener("click", () => updateReview(scores.get(selectedId)?.score ?? null));
   byId("export-scores").addEventListener("click", () => exportScores(scores, reviewer));
+  byId("export-flagged").addEventListener("click", () => exportScores(scores, reviewer, {flaggedOnly: true}));
+  importControl.addEventListener("click", () => scoreFile.click());
+  scoreFile.addEventListener("change", () => {
+    const file = scoreFile.files[0];
+    scoreFile.value = "";
+    importScoreFile(file);
+  });
   byId("export-previous-scores").addEventListener("click", () => exportScores(readBrowserScores(defaultReviewer), defaultReviewer));
   window.addEventListener("storage", (event) => {
     if (sharedScores || !reviewerReady || !event.key?.startsWith(scoreKey)) return;
     scores = readBrowserScores(reviewer);
     renderScore();
-    renderTargets();
+    refreshReviewedTargets();
     refreshOtherScores();
+    renderAnalysis();
   });
+  byId("show-inspection").addEventListener("click", () => switchView(false));
+  byId("show-analysis").addEventListener("click", () => switchView(true));
+  byId("refresh-analysis").addEventListener("click", refreshAnalysis);
+  byId("export-analysis").addEventListener("click", exportAnalysis);
+  byId("export-analysis-summary").addEventListener("click", exportAnalysisSummary);
+  byId("export-analysis-png").addEventListener("click", exportAnalysisPng);
+  analysisCohort.addEventListener("change", renderAnalysis);
+  analysisReviewers.addEventListener("change", refreshAnalysis);
   renderScore();
-  setupScoring();
-  loadDataset();
+  Promise.all([setupScoring(), loadDataset()]).then(() => {
+    if (!activeSample && !plotSourceChanged) restoreSample();
+    if (!analysisPanel.hidden) refreshAnalysis();
+  });
 
   zoom.addEventListener("click", () => {
     fullSize = !fullSize;
