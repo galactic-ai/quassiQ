@@ -147,6 +147,50 @@ def reviewer_name(value):
     return name
 
 
+def valid_score(score):
+    return type(score) in (int, float) and 1 <= score <= 5 and score * 2 == int(score * 2)
+
+
+REVIEW_FLAGS = (
+    "sky-subtraction-error",
+    "redshift-error",
+    "reconstruction-error",
+    "continuum-offset",
+    "lya",
+    "intermediate-clq",
+    "exceptional-clq",
+)
+
+
+def import_scores(connection, name, rows):
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("Include at least one score to import.")
+    entries = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Invalid score row.")
+        target_id, score = row.get("targetId"), row.get("score")
+        if not isinstance(target_id, str) or not re.fullmatch(r"[0-9]{1,20}", target_id):
+            raise ValueError("Each TARGETID must be an exact integer written as text.")
+        if not valid_score(score):
+            raise ValueError("Scores must be from 1 to 5 in half-point steps.")
+        if target_id in entries:
+            raise ValueError("Each TARGETID must appear only once.")
+        entries[target_id] = {"score": score, "observation": "", "reviewedAt": "", "notes": ""}
+
+    inserted = {}
+    for target_id, entry in entries.items():
+        cursor = connection.execute(
+            """INSERT INTO scores (reviewer_key, reviewer, target_id, score, observation, reviewed_at, notes)
+               VALUES (?, ?, ?, ?, '', '', '')
+               ON CONFLICT(reviewer_key, target_id) DO NOTHING""",
+            (name.casefold(), name, target_id, entry["score"]),
+        )
+        if cursor.rowcount:
+            inserted[target_id] = entry
+    return {"inserted": inserted, "skipped": len(entries) - len(inserted)}
+
+
 def serve_viewer(viewer, dataset_path, plot_root, plots, port, score_db):
     """Serve the viewer, index, and indexed PNGs on the local machine."""
     plot_root = plot_root.resolve()
@@ -159,14 +203,19 @@ def serve_viewer(viewer, dataset_path, plot_root, plots, port, score_db):
                 files["/plots/" + relative] = path
     score_db.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(score_db)) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
         connection.execute("""
             CREATE TABLE IF NOT EXISTS scores (
                 reviewer_key TEXT NOT NULL, reviewer TEXT NOT NULL, target_id TEXT NOT NULL,
-                score INTEGER CHECK (score BETWEEN 1 AND 5),
+                score NUMERIC CHECK (score BETWEEN 1 AND 5),
                 observation TEXT NOT NULL, reviewed_at TEXT NOT NULL, notes TEXT NOT NULL,
+                flags TEXT NOT NULL DEFAULT '[]',
                 PRIMARY KEY (reviewer_key, target_id)
             )
         """)
+        columns = {column[1] for column in connection.execute("PRAGMA table_info(scores)")}
+        if "flags" not in columns:
+            connection.execute("ALTER TABLE scores ADD COLUMN flags TEXT NOT NULL DEFAULT '[]'")
         connection.execute("CREATE INDEX IF NOT EXISTS scores_by_target ON scores(target_id)")
 
     class ViewerHandler(SimpleHTTPRequestHandler):
@@ -181,6 +230,35 @@ def serve_viewer(viewer, dataset_path, plot_root, plots, port, score_db):
 
         def do_GET(self):
             request = urlsplit(self.path)
+            if request.path == "/api/scores/analysis":
+                try:
+                    reviewer_key = parse_qs(request.query).get("reviewerKey", [None])[0]
+                    with closing(sqlite3.connect(score_db)) as connection:
+                        reviewers = [
+                            {"key": key, "name": name}
+                            for key, name in connection.execute(
+                                """SELECT reviewer_key, MIN(reviewer) FROM scores
+                                   WHERE score IS NOT NULL GROUP BY reviewer_key ORDER BY reviewer_key"""
+                            )
+                        ]
+                        if reviewer_key is None:
+                            rows = connection.execute(
+                                """SELECT target_id, AVG(score), COUNT(*) FROM scores
+                                   WHERE score IS NOT NULL GROUP BY target_id"""
+                            )
+                        else:
+                            rows = connection.execute(
+                                """SELECT target_id, score, 1 FROM scores
+                                   WHERE score IS NOT NULL AND reviewer_key = ?""",
+                                (reviewer_key,),
+                            )
+                        self.send_json({"targets": {
+                            target_id: {"score": score, "reviewCount": count}
+                            for target_id, score, count in rows
+                        }, "reviewers": reviewers})
+                except sqlite3.Error:
+                    self.send_json({"error": "Could not read analysis scores."}, 503)
+                return
             if request.path != "/api/scores":
                 return super().do_GET()
             params = parse_qs(request.query)
@@ -192,22 +270,24 @@ def serve_viewer(viewer, dataset_path, plot_root, plots, port, score_db):
                 with closing(sqlite3.connect(score_db)) as connection:
                     if "target" in params:
                         rows = connection.execute(
-                            """SELECT reviewer, score, observation, notes FROM scores
+                            """SELECT reviewer, score, observation, notes, flags FROM scores
                                WHERE target_id = ? AND reviewer_key != ? ORDER BY reviewer_key""",
                             (params["target"][0], name.casefold()),
                         )
                         self.send_json({"others": [
-                            {"reviewer": reviewer, "score": score, "observation": observation, "notes": notes}
-                            for reviewer, score, observation, notes in rows
+                            {"reviewer": reviewer, "score": score, "observation": observation,
+                             "notes": notes, "flags": json.loads(flags)}
+                            for reviewer, score, observation, notes, flags in rows
                         ]})
                     else:
                         rows = connection.execute(
-                            """SELECT target_id, score, observation, reviewed_at, notes FROM scores
+                            """SELECT target_id, score, observation, reviewed_at, notes, flags FROM scores
                                WHERE reviewer_key = ?""", (name.casefold(),),
                         )
                         self.send_json({"scores": {
-                            target_id: {"score": score, "observation": observation, "reviewedAt": reviewed_at, "notes": notes}
-                            for target_id, score, observation, reviewed_at, notes in rows
+                            target_id: {"score": score, "observation": observation, "reviewedAt": reviewed_at,
+                                        "notes": notes, "flags": json.loads(flags)}
+                            for target_id, score, observation, reviewed_at, notes, flags in rows
                         }})
             except ValueError as error:
                 self.send_json({"error": str(error)}, 400)
@@ -215,7 +295,9 @@ def serve_viewer(viewer, dataset_path, plot_root, plots, port, score_db):
                 self.send_json({"error": "Could not read saved scores."}, 503)
 
         def do_POST(self):
-            if urlsplit(self.path).path != "/api/scores":
+            path = urlsplit(self.path).path
+            importing = path == "/api/scores/import"
+            if path != "/api/scores" and not importing:
                 self.send_error(404)
                 return
             if self.headers.get_content_type() != "application/json":
@@ -223,47 +305,87 @@ def serve_viewer(viewer, dataset_path, plot_root, plots, port, score_db):
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
-                if not 0 < length <= 16000:
+                if not 0 < length <= (1_000_000 if importing else 16_000):
                     raise ValueError("Invalid score request size.")
                 payload = json.loads(self.rfile.read(length))
-                if not isinstance(payload, dict) or "score" not in payload:
-                    raise ValueError("A score is required.")
+                if not isinstance(payload, dict):
+                    raise ValueError("Invalid score request.")
                 name = reviewer_name(payload.get("reviewer"))
+                if importing:
+                    with closing(sqlite3.connect(score_db)) as connection, connection:
+                        result = import_scores(connection, name, payload.get("rows"))
+                    self.send_json(result)
+                    return
+                flag_update = "flag" in payload
+                flag = payload.get("flag")
+                if flag_update and (
+                    not isinstance(flag, dict)
+                    or flag.get("name") not in REVIEW_FLAGS
+                    or type(flag.get("enabled")) is not bool
+                ):
+                    raise ValueError("Invalid review flag.")
+                if not flag_update and "score" not in payload:
+                    raise ValueError("A score or flag is required.")
                 target_id = payload.get("targetId")
                 if not isinstance(target_id, str) or target_id not in plots:
                     raise ValueError("Unknown target.")
-                score = payload["score"]
+                score = payload.get("score")
                 observation = payload.get("observation", "")
                 notes = payload.get("notes", "")
                 if not isinstance(notes, str) or len(notes) > 1500:
                     raise ValueError("Notes must be at most 1,500 characters.")
                 notes = notes.strip()
-                if score is not None and (type(score) is not int or not 1 <= score <= 5):
-                    raise ValueError("Score must be an integer from 1 to 5.")
+                if score is not None and not valid_score(score):
+                    raise ValueError("Scores must be from 1 to 5 in half-point steps.")
                 entry = None
                 with closing(sqlite3.connect(score_db)) as connection, connection:
-                    if score is None and not notes:
+                    connection.execute("BEGIN IMMEDIATE")
+                    existing = connection.execute(
+                        "SELECT score, observation, notes, flags, reviewed_at FROM scores WHERE reviewer_key = ? AND target_id = ?",
+                        (name.casefold(), target_id),
+                    ).fetchone()
+                    flags = set(json.loads(existing[3])) if existing else set()
+                    if flag_update:
+                        if existing:
+                            score, observation, notes = existing[:3]
+                        if flag["enabled"]:
+                            flags.add(flag["name"])
+                        else:
+                            flags.discard(flag["name"])
+                    ordered_flags = [value for value in REVIEW_FLAGS if value in flags]
+                    reviewed_at = existing[4] if flag_update and existing else datetime.now(timezone.utc).isoformat()
+                    if score is None and not notes and not flags:
                         connection.execute(
                             "DELETE FROM scores WHERE reviewer_key = ? AND target_id = ?",
                             (name.casefold(), target_id),
                         )
+                    elif flag_update and existing:
+                        connection.execute(
+                            "UPDATE scores SET flags = ? WHERE reviewer_key = ? AND target_id = ?",
+                            (json.dumps(ordered_flags), name.casefold(), target_id),
+                        )
                     else:
                         if not isinstance(observation, str) or observation not in plots[target_id]:
                             raise ValueError("Unknown observation.")
-                        reviewed_at = datetime.now(timezone.utc).isoformat()
                         connection.execute(
-                            """INSERT INTO scores VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """INSERT INTO scores (reviewer_key, reviewer, target_id, score, observation, reviewed_at, notes, flags)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                                ON CONFLICT(reviewer_key, target_id) DO UPDATE SET
                                reviewer=excluded.reviewer, score=excluded.score,
-                               observation=excluded.observation, reviewed_at=excluded.reviewed_at, notes=excluded.notes""",
-                            (name.casefold(), name, target_id, score, observation, reviewed_at, notes),
+                               observation=excluded.observation, reviewed_at=excluded.reviewed_at,
+                               notes=excluded.notes, flags=excluded.flags""",
+                            (name.casefold(), name, target_id, score, observation, reviewed_at, notes,
+                             json.dumps(ordered_flags)),
                         )
-                        entry = {"score": score, "observation": observation, "reviewedAt": reviewed_at, "notes": notes}
+                    if score is not None or notes or flags:
+                        entry = {"score": score, "observation": observation, "reviewedAt": reviewed_at,
+                                 "notes": notes, "flags": ordered_flags}
                 self.send_json({"entry": entry})
             except ValueError as error:
                 self.send_json({"error": str(error)}, 400)
-            except sqlite3.Error:
-                self.send_json({"error": "Could not save the score. Try again."}, 503)
+            except sqlite3.Error as error:
+                self.log_error("Could not write review to SQLite: %s", error)
+                self.send_json({"error": "The score database rejected the write. Check the viewer server log."}, 503)
 
         def send_head(self):
             path = files.get(unquote(urlsplit(self.path).path))
