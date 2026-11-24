@@ -28,6 +28,8 @@ sampled = passed.loc[sampled_ids]
 
 
 print(f"{len(passed)} targets passed; sampled {len(sampled)}")
+for target_id in sampled_ids:
+    print(target_id)
 os.makedirs(OUT_DIR, exist_ok=True)
 latent_label = "_".join(map(str, args.latent)) # map: apply to each item
 out_path = os.path.join(

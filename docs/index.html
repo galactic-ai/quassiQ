@@ -109,7 +109,6 @@
   .review-flags { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
   .review-flags button { font-size: .84rem; }
   .review-flags button[aria-pressed="true"] { background: var(--accent); font-weight: 650; }
-  .review-flags button[data-saving] { opacity: .7; }
   .latent-panel { padding: .6rem 1rem; border-bottom: 1px solid var(--line); }
   .latent-panel summary { cursor: pointer; font-weight: 650; }
   .latent-panel table { margin-top: .5rem; border-collapse: collapse; font-variant-numeric: tabular-nums; }
@@ -162,7 +161,7 @@
   .chart-legend { list-style: none; margin: 0; padding: 0; font-size: .85rem; }
   .chart-legend li { display: flex; align-items: center; gap: .45rem; }
   .chart-swatch { width: .65rem; height: .65rem; border-radius: 2px; flex: none; }
-  .score-bar-row { display: grid; grid-template-columns: 3.5rem 1fr 2.25rem; gap: .4rem; align-items: center; font-size: .86rem; font-variant-numeric: tabular-nums; }
+  .score-bar-row { display: grid; grid-template-columns: 2rem 1fr 2.25rem; gap: .4rem; align-items: center; font-size: .86rem; font-variant-numeric: tabular-nums; }
   .score-bar-track { background: #eef0f4; height: .7rem; border-radius: 3px; overflow: hidden; }
   .score-bar-fill { display: block; height: 100%; background: var(--ink); }
   @media (max-width: 760px) {
@@ -180,7 +179,6 @@
     <button id="open-catalog" type="button">Load redshift CSV</button>
     <button id="import-scores" type="button" disabled>Import scores CSV</button>
     <button id="export-scores" type="button" class="primary" disabled>Export scores</button>
-    <button id="export-flagged" type="button" disabled>Export flagged targets</button>
     <input id="plot-folder" type="file" webkitdirectory multiple hidden>
     <input id="catalog-file" type="file" accept=".csv,text/csv" hidden>
     <input id="score-file" type="file" accept=".csv,text/csv" hidden>
@@ -325,8 +323,7 @@
       <label>Scores
         <select id="analysis-reviewers">
           <option value="mine">My scores</option>
-          <option id="analysis-team-option" value="team" disabled>Team average</option>
-          <optgroup id="analysis-named-reviewers" label="Individual reviewers"></optgroup>
+          <option id="analysis-team-option" value="team" disabled>Team scores · lowest per target</option>
         </select>
       </label>
       <button id="refresh-analysis" type="button">Refresh scores</button>
@@ -459,8 +456,8 @@
     showOthers.checked = false;
     reviewerReady = false;
     scores = new Map();
-    renderScore("Loading your reviews…");
     refreshReviewedTargets();
+    renderScore("Loading your reviews…");
     refreshOtherScores();
     const request = ++reviewerRequest;
     try {
@@ -480,8 +477,6 @@
     return JSON.stringify([reviewer.toLowerCase(), selectedId]);
   }
 
-  let pendingFlag = null;
-
   function renderScore(message = "") {
     const entry = scores.get(selectedId);
     const enabled = reviewerReady && Boolean(selectedId) && !savingScore;
@@ -492,16 +487,11 @@
     }
     for (const control of flagButtons) {
       control.disabled = !enabled;
-      const flag = control.dataset.flag;
-      const pending = pendingFlag?.targetId === selectedId && pendingFlag?.reviewer === reviewer
-        && pendingFlag?.name === flag;
-      control.toggleAttribute("data-saving", pending);
-      control.setAttribute("aria-pressed", String(pending ? pendingFlag.enabled : (entry?.flags?.includes(flag) ?? false)));
+      control.setAttribute("aria-pressed", String(entry?.flags?.includes(control.dataset.flag) ?? false));
     }
     byId("clear-score").hidden = entry?.score == null;
     byId("clear-score").disabled = !enabled;
     byId("export-scores").disabled = !reviewerReady || !scores.size;
-    byId("export-flagged").disabled = !reviewerReady || !Array.from(scores.values()).some(hasReviewFlags);
     flagFilter.disabled = !reviewerReady;
     importControl.disabled = !reviewerReady || savingScore;
     showOthers.disabled = !reviewerReady || !selectedId;
@@ -522,18 +512,12 @@
       ? selectedObservation : scores.get(id)?.observation || selectedObservation;
     const request = reviewerRequest;
     let entry;
-    let failure = "";
     savingScore = true;
-    if (flag) pendingFlag = {...flag, targetId: id, reviewer: name};
     renderScore("Saving…");
     try {
       if (sharedScores) {
         const change = flag ? {flag} : {score, notes};
         ({entry} = await scoreRequest(null, {reviewer: name, targetId: id, observation, ...change}));
-        if (flag && (entry === null ? flag.enabled : !Array.isArray(entry?.flags) ||
-          entry.flags.includes(flag.name) !== flag.enabled)) {
-          throw new Error("The server did not confirm the flag change. Restart it with the updated build_vi_dataset.py.");
-        }
       } else {
         const updated = readBrowserScores(name);
         const previous = updated.get(id);
@@ -555,18 +539,19 @@
       if (request !== reviewerRequest) return;
       if (entry) scores.set(id, entry);
       else scores.delete(id);
-      if (flag) refreshReviewedTargets();
-      else renderTargets();
+      refreshReviewedTargets();
       if (!analysisPanel.hidden) refreshAnalysis();
     } catch (error) {
       if (request === reviewerRequest && id === selectedId) {
-        const action = flag ? "Could not save flag." : "Could not save review.";
-        failure = action + " " + error.message;
+        savingScore = false;
+        renderScore((flag ? "Could not save flag. " : "Could not save review. ") + error.message);
       }
+      return;
     } finally {
-      savingScore = false;
-      pendingFlag = null;
-      renderScore(failure);
+      if (savingScore) {
+        savingScore = false;
+        renderScore();
+      }
     }
   }
 
@@ -687,17 +672,12 @@
     return (entry.flags ?? []).map((flag) => flagLabels.get(flag) ?? flag).join(" | ");
   }
 
-  function hasReviewFlags(entry) {
-    return (entry.flags?.length ?? 0) > 0;
-  }
-
-  function exportScores(entries, name, {flaggedOnly = false} = {}) {
+  function exportScores(entries, name) {
     const rows = [["TARGETID", "Score", "Observation", "ReviewedAt", "Reviewer", "Notes", "Flags"]];
     for (const [id, entry] of entries) {
-      if (flaggedOnly && !hasReviewFlags(entry)) continue;
       rows.push([id, entry.score, entry.observation, entry.reviewedAt, name, entry.notes, reviewFlagText(entry)]);
     }
-    downloadCsv(flaggedOnly ? "quassiq-vi-flagged.csv" : "quassiq-vi-scores.csv", rows);
+    downloadCsv("quassiq-vi-scores.csv", rows);
   }
 
   function downloadCsv(filename, rows) {
@@ -730,7 +710,7 @@
   const analysisPanel = byId("analysis-panel");
   const analysisCohort = byId("analysis-cohort");
   const analysisReviewers = byId("analysis-reviewers");
-  let analysisScores = new Map();
+  let teamScores = new Map();
   let analysisRequest = 0;
   let analysisBusy = false;
   let analysisExportBusy = false;
@@ -743,11 +723,9 @@
 
   function analysisResults() {
     const ids = analysisCohort.value === "sample" && activeSample ? activeSample.ids : matchingIds;
-    const useMine = analysisReviewers.value === "mine";
-    const source = useMine ? reviewer : analysisReviewers.selectedOptions[0]?.textContent ?? "";
-    const selectedScores = useMine ? scores : analysisScores;
+    const useTeam = analysisReviewers.value === "team";
     const rows = ids.map((id) => {
-      const entry = selectedScores.get(id);
+      const entry = useTeam ? teamScores.get(id) : scores.get(id);
       const score = entry?.score;
       const isScored = Number.isFinite(score) && score >= 1 && score <= 5;
       const bin = !isScored ? -1 : score < 3 ? 0 : score < 4 ? 1 : 2;
@@ -762,7 +740,7 @@
         rows: rows.filter((row) => spreadForTarget(row.id, name) > cutoff),
       });
     }
-    return {rows, groups, cuts, source};
+    return {rows, groups, cuts, useTeam};
   }
 
   function scoreBinCounts(rows) {
@@ -821,13 +799,9 @@
   function exactScoreCounts(rows) {
     const counts = new Map(scoreSteps.map((score) => [score, 0]));
     for (const {score} of rows) {
-      if (score !== null) counts.set(score, (counts.get(score) ?? 0) + 1);
+      if (counts.has(score)) counts.set(score, counts.get(score) + 1);
     }
-    return new Map([...counts].sort(([a], [b]) => a - b));
-  }
-
-  function displayScore(score) {
-    return String(Number(score.toFixed(3)));
+    return counts;
   }
 
   function scoreBars(rows) {
@@ -844,7 +818,7 @@
       fill.className = "score-bar-fill";
       fill.style.width = (100 * count / max) + "%";
       track.append(fill);
-      row.append(document.createTextNode(displayScore(score)), track, document.createTextNode(String(count)));
+      row.append(document.createTextNode(String(score)), track, document.createTextNode(String(count)));
       figure.append(row);
     }
     return figure;
@@ -857,7 +831,7 @@
     byId("analysis-team-option").disabled = !sharedScores;
     const charts = byId("analysis-charts");
     const status = byId("analysis-status");
-    const {rows, groups, source} = analysisResults();
+    const {rows, groups, useTeam} = analysisResults();
     const waiting = analysisBusy || Boolean(analysisError);
     byId("export-analysis").disabled = byId("export-analysis-summary").disabled = waiting || !rows.length;
     byId("export-analysis-png").disabled = waiting || !rows.length || analysisExportBusy;
@@ -868,10 +842,9 @@
       return;
     }
     const scored = rows.filter(({score}) => score !== null).length;
-    const scope = analysisReviewers.value === "team" ? "Team averages use the available scores for each target."
-      : analysisReviewers.value !== "mine" || reviewerReady ? "Scores for " + source + "."
-      : "Choose your reviewer name in Inspection to load your scores.";
-    status.textContent = scored + " of " + rows.length + " targets scored. " + scope
+    const source = useTeam ? "Team scores use the lowest score for each target."
+      : reviewerReady ? "Scores for " + reviewer + "." : "Choose your reviewer name in Inspection to load your scores.";
+    status.textContent = scored + " of " + rows.length + " targets scored. " + source
       + (groups.length > 1 ? " A target can appear in multiple latent charts." : "");
     if (!rows.length) return;
     charts.append(scorePie(groups[0]), scoreBars(rows), ...groups.slice(1).map(scorePie));
@@ -880,9 +853,8 @@
   async function refreshAnalysis() {
     const request = ++analysisRequest;
     analysisError = "";
-    const selectedSource = analysisReviewers.value;
-    const activeReviewer = reviewer;
-    if (!sharedScores) {
+    const useTeam = analysisReviewers.value === "team";
+    if (!sharedScores || (!useTeam && !reviewerReady)) {
       analysisBusy = false;
       renderAnalysis();
       return;
@@ -890,28 +862,16 @@
     analysisBusy = true;
     renderAnalysis();
     try {
-      const reviewerKey = selectedSource.startsWith("reviewer:") ? selectedSource.slice(9) : null;
-      const [data, mine] = await Promise.all([
-        scoreRequest(reviewerKey ? {reviewerKey} : null, null, "/analysis"),
-        selectedSource === "mine" && reviewerReady ? scoreRequest({reviewer: activeReviewer}) : null,
-      ]);
+      const data = useTeam ? await scoreRequest(null, null, "/analysis") : await scoreRequest({reviewer});
       if (request !== analysisRequest) return;
-      if (!Array.isArray(data.reviewers)) {
-        throw new Error("Restart the viewer with the updated build_vi_dataset.py to load team averages and reviewer names.");
-      }
-      const namedReviewers = byId("analysis-named-reviewers");
-      namedReviewers.replaceChildren(...data.reviewers.map(({key, name}) => new Option(name, "reviewer:" + key)));
-      analysisReviewers.value = selectedSource;
-      if (!analysisReviewers.value) analysisReviewers.value = "team";
-      analysisScores = new Map(Object.entries(data.targets));
-      if (mine && activeReviewer === reviewer) {
-        scores = new Map(Object.entries(mine.scores));
+      if (useTeam) teamScores = new Map(Object.entries(data.targets));
+      else {
+        scores = new Map(Object.entries(data.scores));
         refreshReviewedTargets();
         renderScore();
       }
-      if (analysisReviewers.value !== selectedSource) return refreshAnalysis();
-    } catch (error) {
-      if (request === analysisRequest) analysisError = error.message;
+    } catch {
+      if (request === analysisRequest) analysisError = "Could not load scores. Click Refresh scores to retry.";
     } finally {
       if (request === analysisRequest) {
         analysisBusy = false;
@@ -929,7 +889,8 @@
   }
 
   function exportAnalysis() {
-    const {rows, cuts, source} = analysisResults();
+    const {rows, cuts, useTeam} = analysisResults();
+    const source = useTeam ? "Team minimum" : reviewer;
     const csv = [["TARGETID", "Z", "Score", "ScoreBin", "ReviewCount", "ScoreSource",
       ...cuts.map(([name]) => "SpreadLatent" + name.slice(6))]];
     for (const {id, score, bin, count} of rows) {
@@ -943,7 +904,8 @@
   }
 
   function exportAnalysisSummary() {
-    const {rows, groups, source} = analysisResults();
+    const {rows, groups, useTeam} = analysisResults();
+    const source = useTeam ? "Team minimum" : reviewer;
     const csv = [["TargetGroup", "Breakdown", "Score", "Count", "ScoredTargets", "MatchingTargets", "PercentOfScored", "ScoreSource"]];
     for (const group of groups) {
       const counts = scoreBinCounts(group.rows);
@@ -1057,16 +1019,16 @@
       ctx.fillText(String(tick), left - 6, y + 3);
     }
     ctx.textAlign = "center";
-    const labelEvery = Math.ceil(28 / binWidth);
-    for (const [index, [score, count]] of Array.from(counts).entries()) {
-      const x = left + (index + 0.5) * binWidth;
+    let index = 0;
+    for (const [score, count] of counts) {
+      const x = left + (index++ + 0.5) * binWidth;
       const barHeight = plotHeight * count / limit;
       ctx.fillStyle = "#27354f";
       if (count) ctx.fillRect(x - 0.35 * binWidth, bottom - barHeight, 0.7 * binWidth, barHeight);
       ctx.fillStyle = "#111";
       ctx.fillRect(x, bottom, 0.55, 3);
-      if (index % labelEvery === 0) ctx.fillText(displayScore(score), x, bottom + 15);
-      if (count && labelEvery === 1) ctx.fillText(String(count), x, bottom - barHeight - 4);
+      ctx.fillText(String(score), x, bottom + 15);
+      if (count) ctx.fillText(String(count), x, bottom - barHeight - 4);
     }
     ctx.fillText("Score", (left + right) / 2, 253);
     ctx.save();
@@ -1729,9 +1691,8 @@
   spreadMode.addEventListener("change", updateFilters);
   flagFilter.addEventListener("change", updateFilters);
   byId("clear").addEventListener("click", () => {
-    search.value = minZ.value = maxZ.value = "";
+    search.value = minZ.value = maxZ.value = flagFilter.value = "";
     spreadMode.value = "any";
-    flagFilter.value = "";
     for (const input of cutoffFields.values()) input.value = "";
     updateFilters();
   });
@@ -1769,7 +1730,6 @@
   });
   saveNote.addEventListener("click", () => updateReview(scores.get(selectedId)?.score ?? null));
   byId("export-scores").addEventListener("click", () => exportScores(scores, reviewer));
-  byId("export-flagged").addEventListener("click", () => exportScores(scores, reviewer, {flaggedOnly: true}));
   importControl.addEventListener("click", () => scoreFile.click());
   scoreFile.addEventListener("change", () => {
     const file = scoreFile.files[0];
