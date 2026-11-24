@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Redraw existing N_sigma results with coadds and reconstructions in raw flux units.
 
-python refresh_nsigma_plots.py --nsigma-py /work/11161/kanyuni/ls6/quassiQ_project/quassiQ/src/pipeline/N_sigma.py --csv-dir /work/11161/kanyuni/ls6/quassiQ_project/pipeline_output/csv
+python refresh_nsigma_plots.py --nsigma-py /work/11161/kanyuni/ls6/quassiQ_project/quassiQ/src/pipeline/n_sigma.py --csv-dir /work/11161/kanyuni/ls6/quassiQ_project/pipeline_output/csv
 
 CSV results and N_sigma measurements are never rewritten. Existing PNGs are
 replaced in place; --output-dir writes copies elsewhere instead.

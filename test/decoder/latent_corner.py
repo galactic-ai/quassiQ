@@ -43,8 +43,30 @@ handles = [
     Line2D([0], [0], color="crimson", ls="--", lw=1, marker="s", ms=6, label="Median"),
     Line2D([0], [0], color="tab:orange", ls="--", lw=1, marker="s", ms=6, label="Mean"),
 ]
-fig.legend(handles=handles, loc="upper right",
-           bbox_to_anchor=(0.95, 0.95), fontsize=20, frameon=True)
+
+# fig.legend(handles=handles, loc="upper right",
+#            bbox_to_anchor=(0.95, 0.95), fontsize=20, frameon=True)
+
+
+
+ndim = len(cols)
+rho = pd.DataFrame(L, columns=cols).corr(method="spearman").values   # (10, 10)
+axes = np.array(fig.axes).reshape((ndim, ndim))
+cmap = plt.get_cmap("coolwarm")
+
+for i in range(ndim):
+    for j in range(i + 1, ndim):                
+        ax = axes[i, j]
+        r = rho[i, j]
+        ax.add_patch(plt.Rectangle((0, 0), 1, 1, transform=ax.transAxes,
+                                   facecolor=cmap((r + 1) / 2), alpha=0.6, zorder=0))
+        ax.text(0.5, 0.5, f"{r:+.2f}", transform=ax.transAxes,
+                ha="center", va="center", fontsize=9 + 9 * abs(r), zorder=1)
+
+fig.legend(handles=handles, loc="upper left",
+           bbox_to_anchor=(1.0, 0.95), fontsize=20, frameon=True)
+
+
 
 fig.savefig("/work/11161/kanyuni/ls6/quassiQ_project/latent/distribution/latent_corner.png", dpi=150, bbox_inches="tight")
 plt.close(fig)

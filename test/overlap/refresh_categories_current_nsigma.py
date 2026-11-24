@@ -2,7 +2,7 @@
 """Rebuild emission/cluster/latent regions with the current N_sigma code.
 
 The emission decision is recomputed from every quality-passing epoch pair and
-every emission-line window defined by the imported N_sigma.py.  Targets with
+every emission-line window defined by the imported n_sigma.py.  Targets with
 no finite line/pair measurement are recorded as unassessable and are excluded
 from the seven Venn regions.
 
@@ -62,7 +62,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--nsigma-script",
         type=Path,
-        default=ROOT / "quassiQ/src/pipeline/N_sigma.py",
+        default=ROOT / "quassiQ/src/pipeline/n_sigma.py",
     )
     parser.add_argument(
         "--cluster-csv",

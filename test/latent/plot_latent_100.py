@@ -65,7 +65,7 @@ def main():
     parser.add_argument('--input-csv', type=Path, default=Path(
         '/work/10579/prisha/ls6/desi_project/latent_variance_exclusive.csv'))
     parser.add_argument('--nsigma-script', type=Path, default=Path(
-        '/work/11161/kanyuni/ls6/quassiQ_project/quassiQ/src/pipeline/N_sigma.py'))
+        '/work/11161/kanyuni/ls6/quassiQ_project/quassiQ/src/pipeline/n_sigma.py'))
     parser.add_argument('--number', type=int, default=100)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--line-name', default='lya',

@@ -19,7 +19,7 @@ def main():
     parser.add_argument('--plot-script', type=Path,
                         default=Path("/work/11161/kanyuni/ls6/quassiQ_project/quassiQ/test/overlap/plot_venn_categories.py"))
     parser.add_argument('--nsigma-script', type=Path, default=Path(
-        '/work/11161/kanyuni/ls6/quassiQ_project/quassiQ/src/pipeline/N_sigma.py'))
+        '/work/11161/kanyuni/ls6/quassiQ_project/quassiQ/src/pipeline/n_sigma.py'))
     parser.add_argument('--folder', type=Path, default=Path(
         '/work/11161/kanyuni/ls6/quassiQ_project/pipeline_output/category_plots/latent_only'))
     args = parser.parse_args()

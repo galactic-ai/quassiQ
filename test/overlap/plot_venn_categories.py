@@ -100,7 +100,7 @@ def plot_raw_target(pipeline, target, high, low, redshift, reference,
             else:
                 ax.plot(wave, flux, color=color, lw=0.45, alpha=0.4,
                         label=f'{label} coadd: {epoch["date"]}')
-                # N_sigma.py stores RECON_FLUX divided by NORM.
+                # n_sigma.py stores RECON_FLUX divided by NORM.
                 ax.plot(epoch['rest_wave'], epoch['recon_flux'] * epoch['normalization'],
                         color=color, lw=1.4, label=f'{label} reconstruction: {epoch["date"]}')
         if not found:
@@ -210,7 +210,7 @@ def main():
     parser.add_argument('--latent-csv',  type=Path, default = Path("/work/11161/kanyuni/ls6/quassiQ_project/pipeline_output/latent/latent_targets_with_nonzero_p95_counts.csv"),
                         help='Full latent list with n_latents_exceed_p95, or prefiltered outlier list. Not the exclusive CSV.')
     parser.add_argument('--nsigma-script', type=Path, default=Path(
-        '/work/11161/kanyuni/ls6/quassiQ_project/quassiQ/src/pipeline/N_sigma.py'))
+        '/work/11161/kanyuni/ls6/quassiQ_project/quassiQ/src/pipeline/n_sigma.py'))
     parser.add_argument('--out-dir', type=Path, default=root / 'category_plots')
     parser.add_argument('--final-subset-csv', type=Path, default=Path(
         '/work/10579/prisha/ls6/desi_project/final_subset.csv'),
