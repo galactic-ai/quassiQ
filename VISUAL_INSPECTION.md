@@ -13,12 +13,12 @@ One person runs the viewer on Lonestar6. Each reviewer connects to that same ser
 3. In that SSH session, go to the directory containing the viewer files. Run `hostname -f` and copy the specific login-node hostname to share with reviewers. Then run the viewer command. Replace the redshift catalog path with the path to your copy of `post_chi2_calc.csv`.
 
    ```bash
-   python3 docs/build_vi_dataset.py \
-     --plots /work/10579/prisha/ls6/desi_project/plots \
-     --redshift-csv /work/10579/prisha/ls6/desi_project/post_chi2_calc.csv \
-     --latent-csv /work/10579/prisha/ls6/desi_project/latent_info.csv \
+   python3 /work/11161/kanyuni/ls6/quassiQ_project/quassiQ/docs/build_vi_dataset.py \
+     --plots /work/11161/kanyuni/ls6/quassiQ_project/vi_split_plots \
+     --redshift-csv /work/10579/prisha/ls6/desi_project/final_subset.csv \
      --subset-csv /work/10579/prisha/ls6/desi_project/final_subset.csv \
-     --serve
+     --latent-csv /work/10579/prisha/ls6/desi_project/latent_info.csv \
+     --serve --port 8001
    ```
 
 4. Keep that terminal open. On your computer, visit [http://127.0.0.1:8000/](http://127.0.0.1:8000/). Send reviewers the specific hostname and the joining instructions below.
