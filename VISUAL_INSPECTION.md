@@ -18,6 +18,7 @@ One person runs the viewer on Lonestar6. Each reviewer connects to that same ser
      --redshift-csv /work/10579/prisha/ls6/desi_project/final_subset.csv \
      --subset-csv /work/10579/prisha/ls6/desi_project/final_subset.csv \
      --latent-csv /work/10579/prisha/ls6/desi_project/latent_info.csv \
+     --score-db /work/11161/kanyuni/ls6/quassiQ_project/quassiQ/vi_scores.sqlite3 \
      --serve --port 8001
    ```
 
